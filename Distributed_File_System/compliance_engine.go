@@ -1,0 +1,448 @@
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+// ComplianceEngine handles regulatory compliance and governance
+type ComplianceEngine struct {
+    nodeID              string
+    complianceRules     map[string]*ComplianceRule
+    violations          []ComplianceViolation
+    reports             map[string]*ComplianceReport
+    dataClassifications map[string]*DataClassification
+    mutex               sync.RWMutex
+    server              *EnterpriseFileServer
+    config              *ComplianceConfig
+}
+
+// ComplianceRule defines regulatory compliance requirements
+type ComplianceRule struct {
+    RuleID          string            `json:"rule_id"`
+    Name            string            `json:"name"`
+    Regulation      string            `json:"regulation"` // GDPR, HIPAA, SOX, etc.
+    Description     string            `json:"description"`
+    Requirements    []string          `json:"requirements"`
+    Severity        string            `json:"severity"`
+    AutoRemediation bool              `json:"auto_remediation"`
+    CreatedAt       time.Time         `json:"created_at"`
+    IsActive        bool              `json:"is_active"`
+}
+
+// ComplianceViolation tracks compliance violations
+type ComplianceViolation struct {
+    ViolationID     string            `json:"violation_id"`
+    RuleID          string            `json:"rule_id"`
+    ResourceID      string            `json:"resource_id"`
+    UserID          string            `json:"user_id"`
+    Description     string            `json:"description"`
+    Severity        string            `json:"severity"`
+    Status          string            `json:"status"` // open, remediated, false_positive
+    DetectedAt      time.Time         `json:"detected_at"`
+    RemediatedAt    *time.Time        `json:"remediated_at,omitempty"`
+    RemediationPlan string            `json:"remediation_plan"`
+}
+
+// ComplianceReport generates compliance status reports
+type ComplianceReport struct {
+    ReportID        string            `json:"report_id"`
+    ReportType      string            `json:"report_type"`
+    Regulation      string            `json:"regulation"`
+    GeneratedAt     time.Time         `json:"generated_at"`
+    CoverageScore   float64           `json:"coverage_score"`
+    ViolationCount  int               `json:"violation_count"`
+    Status          string            `json:"status"`
+    Recommendations []string          `json:"recommendations"`
+    Details         map[string]interface{} `json:"details"`
+}
+
+// DataClassification defines data sensitivity levels
+type DataClassification struct {
+    ClassificationID string            `json:"classification_id"`
+    Level            string            `json:"level"` // public, internal, confidential, restricted
+    DataType         string            `json:"data_type"`
+    RetentionPeriod  time.Duration     `json:"retention_period"`
+    AccessControls   []string          `json:"access_controls"`
+    EncryptionRequired bool            `json:"encryption_required"`
+    AuditRequired    bool              `json:"audit_required"`
+}
+
+// ComplianceConfig defines compliance parameters
+type ComplianceConfig struct {
+    EnabledRegulations   []string      `json:"enabled_regulations"`
+    AutoRemediation      bool          `json:"auto_remediation"`
+    ReportingInterval    time.Duration `json:"reporting_interval"`
+    ViolationThreshold   int           `json:"violation_threshold"`
+    DataRetentionDefault time.Duration `json:"data_retention_default"`
+}
+
+func NewComplianceEngine(nodeID string, server *EnterpriseFileServer) *ComplianceEngine {
+    config := &ComplianceConfig{
+        EnabledRegulations:   []string{"GDPR", "HIPAA", "SOX", "PCI-DSS"},
+        AutoRemediation:      true,
+        ReportingInterval:    24 * time.Hour,
+        ViolationThreshold:   5,
+        DataRetentionDefault: 7 * 365 * 24 * time.Hour, // 7 years
+    }
+
+    ce := &ComplianceEngine{
+        nodeID:              nodeID,
+        complianceRules:     make(map[string]*ComplianceRule),
+        violations:          make([]ComplianceViolation, 0),
+        reports:             make(map[string]*ComplianceReport),
+        dataClassifications: make(map[string]*DataClassification),
+        server:              server,
+        config:              config,
+    }
+
+    return ce
+}
+
+// Initialize Compliance Engine
+func (ce *ComplianceEngine) Initialize() {
+    ce.mutex.Lock()
+    defer ce.mutex.Unlock()
+
+    // Create compliance rules for enabled regulations
+    ce.createComplianceRules()
+
+    // Create default data classifications
+    ce.createDataClassifications()
+
+    // Start background processes
+    go ce.complianceMonitoringLoop()
+    go ce.reportGenerationLoop()
+
+    fmt.Printf("[COMPLIANCE] Compliance Engine initialized for node %s\n", ce.nodeID[:8])
+    fmt.Printf("[COMPLIANCE] Enabled regulations: %v\n", ce.config.EnabledRegulations)
+}
+
+// Create compliance rules for different regulations
+func (ce *ComplianceEngine) createComplianceRules() {
+    // GDPR Rules
+    gdprRule := &ComplianceRule{
+        RuleID:      generateID(),
+        Name:        "GDPR_Data_Protection",
+        Regulation:  "GDPR",
+        Description: "Ensure personal data is protected and user rights are respected",
+        Requirements: []string{
+            "Right to erasure implementation",
+            "Data portability support",
+            "Consent management",
+            "Breach notification within 72 hours",
+        },
+        Severity:        "high",
+        AutoRemediation: true,
+        CreatedAt:       time.Now(),
+        IsActive:        true,
+    }
+
+    // HIPAA Rules
+    hipaaRule := &ComplianceRule{
+        RuleID:      generateID(),
+        Name:        "HIPAA_Health_Data_Protection",
+        Regulation:  "HIPAA",
+        Description: "Protect health information and ensure patient privacy",
+        Requirements: []string{
+            "Minimum necessary standard",
+            "Access controls for PHI",
+            "Audit trails for all access",
+            "Encryption of PHI in transit and at rest",
+        },
+        Severity:        "critical",
+        AutoRemediation: true,
+        CreatedAt:       time.Now(),
+        IsActive:        true,
+    }
+
+    // SOX Rules
+    soxRule := &ComplianceRule{
+        RuleID:      generateID(),
+        Name:        "SOX_Financial_Controls",
+        Regulation:  "SOX",
+        Description: "Maintain financial data integrity and controls",
+        Requirements: []string{
+            "Segregation of duties",
+            "Change management controls",
+            "Access controls for financial systems",
+            "Regular compliance testing",
+        },
+        Severity:        "high",
+        AutoRemediation: false,
+        CreatedAt:       time.Now(),
+        IsActive:        true,
+    }
+
+    ce.complianceRules[gdprRule.RuleID] = gdprRule
+    ce.complianceRules[hipaaRule.RuleID] = hipaaRule
+    ce.complianceRules[soxRule.RuleID] = soxRule
+
+    fmt.Printf("[COMPLIANCE] Created %d compliance rules\n", len(ce.complianceRules))
+}
+
+// Create default data classifications
+func (ce *ComplianceEngine) createDataClassifications() {
+    classifications := []*DataClassification{
+        {
+            ClassificationID:   generateID(),
+            Level:              "public",
+            DataType:           "general",
+            RetentionPeriod:    365 * 24 * time.Hour, // 1 year
+            AccessControls:     []string{"authenticated_users"},
+            EncryptionRequired: false,
+            AuditRequired:      false,
+        },
+        {
+            ClassificationID:   generateID(),
+            Level:              "confidential",
+            DataType:           "business",
+            RetentionPeriod:    3 * 365 * 24 * time.Hour, // 3 years
+            AccessControls:     []string{"authorized_personnel", "need_to_know"},
+            EncryptionRequired: true,
+            AuditRequired:      true,
+        },
+        {
+            ClassificationID:   generateID(),
+            Level:              "restricted",
+            DataType:           "personal",
+            RetentionPeriod:    7 * 365 * 24 * time.Hour, // 7 years
+            AccessControls:     []string{"data_controllers", "explicit_consent"},
+            EncryptionRequired: true,
+            AuditRequired:      true,
+        },
+    }
+
+    for _, classification := range classifications {
+        ce.dataClassifications[classification.ClassificationID] = classification
+    }
+
+    fmt.Printf("[COMPLIANCE] Created %d data classifications\n", len(ce.dataClassifications))
+}
+
+// Monitor for compliance violations
+func (ce *ComplianceEngine) complianceMonitoringLoop() {
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        ce.performComplianceCheck()
+    }
+}
+
+// Generate compliance reports
+func (ce *ComplianceEngine) reportGenerationLoop() {
+    ticker := time.NewTicker(ce.config.ReportingInterval)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        ce.generateComplianceReports()
+    }
+}
+
+// Perform compliance checks
+func (ce *ComplianceEngine) performComplianceCheck() {
+    ce.mutex.Lock()
+    defer ce.mutex.Unlock()
+
+    violationsFound := 0
+
+    // Check each compliance rule
+    for _, rule := range ce.complianceRules {
+        if !rule.IsActive {
+            continue
+        }
+
+        // Simplified compliance checking (in production, this would be more sophisticated)
+        violations := ce.checkRuleCompliance(rule)
+        violationsFound += len(violations)
+
+        for _, violation := range violations {
+            ce.violations = append(ce.violations, violation)
+
+            // Log violation
+            if ce.server.auditLogger != nil {
+                ce.server.auditLogger.LogEvent(
+                    "compliance_violation",
+                    violation.UserID,
+                    violation.ResourceID,
+                    "violation_detected",
+                    violation.Severity,
+                    map[string]interface{}{
+                        "rule_id":      violation.RuleID,
+                        "violation_id": violation.ViolationID,
+                        "regulation":   rule.Regulation,
+                    },
+                )
+            }
+
+            // Auto-remediate if enabled
+            if ce.config.AutoRemediation && rule.AutoRemediation {
+                ce.remediateViolation(&violation)
+            }
+        }
+    }
+
+    if violationsFound > 0 {
+        fmt.Printf("[COMPLIANCE] Compliance check: %d violations found\n", violationsFound)
+    }
+}
+
+// Check compliance for a specific rule
+func (ce *ComplianceEngine) checkRuleCompliance(rule *ComplianceRule) []ComplianceViolation {
+    violations := make([]ComplianceViolation, 0)
+
+    // Simplified rule checking (in production, this would implement actual compliance logic)
+    switch rule.Regulation {
+    case "GDPR":
+        // Check for GDPR compliance violations
+        // This would include checking for proper consent, data minimization, etc.
+        
+    case "HIPAA":
+        // Check for HIPAA compliance violations
+        // This would include checking PHI access controls, audit trails, etc.
+        
+    case "SOX":
+        // Check for SOX compliance violations
+        // This would include checking financial data controls, segregation of duties, etc.
+    }
+
+    return violations
+}
+
+// Remediate compliance violation
+func (ce *ComplianceEngine) remediateViolation(violation *ComplianceViolation) {
+    // Simplified auto-remediation
+    violation.Status = "remediated"
+    now := time.Now()
+    violation.RemediatedAt = &now
+    violation.RemediationPlan = "Automated remediation applied"
+
+    fmt.Printf("[COMPLIANCE] Auto-remediated violation %s\n", violation.ViolationID[:8])
+}
+
+// Generate compliance reports
+func (ce *ComplianceEngine) generateComplianceReports() {
+    ce.mutex.Lock()
+    defer ce.mutex.Unlock()
+
+    for _, regulation := range ce.config.EnabledRegulations {
+        report := ce.generateRegulationReport(regulation)
+        ce.reports[report.ReportID] = report
+    }
+
+    fmt.Printf("[COMPLIANCE] Generated %d compliance reports\n", len(ce.config.EnabledRegulations))
+}
+
+// Generate report for specific regulation
+func (ce *ComplianceEngine) generateRegulationReport(regulation string) *ComplianceReport {
+    // Count violations for this regulation
+    violationCount := 0
+    for _, violation := range ce.violations {
+        if rule, exists := ce.complianceRules[violation.RuleID]; exists && rule.Regulation == regulation {
+            violationCount++
+        }
+    }
+
+    // Calculate coverage score (simplified)
+    coverageScore := 100.0
+    if violationCount > 0 {
+        coverageScore = max(0, 100.0-float64(violationCount*10))
+    }
+
+    // Generate recommendations
+    recommendations := ce.generateRecommendations(regulation, violationCount)
+
+    report := &ComplianceReport{
+        ReportID:        generateID(),
+        ReportType:      "regulatory_compliance",
+        Regulation:      regulation,
+        GeneratedAt:     time.Now(),
+        CoverageScore:   coverageScore,
+        ViolationCount:  violationCount,
+        Status:          ce.getComplianceStatus(coverageScore),
+        Recommendations: recommendations,
+        Details: map[string]interface{}{
+            "total_rules_checked": len(ce.complianceRules),
+            "monitoring_period":   "24h",
+            "last_updated":        time.Now().Format(time.RFC3339),
+        },
+    }
+
+    return report
+}
+
+// Generate recommendations based on compliance status
+func (ce *ComplianceEngine) generateRecommendations(regulation string, violationCount int) []string {
+    recommendations := make([]string, 0)
+
+    if violationCount > 0 {
+        recommendations = append(recommendations, fmt.Sprintf("Address %d outstanding violations", violationCount))
+    }
+
+    switch regulation {
+    case "GDPR":
+        recommendations = append(recommendations, 
+            "Implement automated data subject request handling",
+            "Review data retention policies",
+            "Conduct privacy impact assessments")
+    case "HIPAA":
+        recommendations = append(recommendations,
+            "Enhance PHI access controls",
+            "Implement comprehensive audit logging",
+            "Conduct security risk assessments")
+    case "SOX":
+        recommendations = append(recommendations,
+            "Strengthen financial data controls",
+            "Implement change management processes",
+            "Regular compliance testing")
+    }
+
+    return recommendations
+}
+
+// Get compliance status based on coverage score
+func (ce *ComplianceEngine) getComplianceStatus(score float64) string {
+    if score >= 95 {
+        return "compliant"
+    } else if score >= 80 {
+        return "mostly_compliant"
+    } else if score >= 60 {
+        return "partially_compliant"
+    } else {
+        return "non_compliant"
+    }
+}
+
+// Get compliance status
+func (ce *ComplianceEngine) GetComplianceStatus() map[string]interface{} {
+    ce.mutex.RLock()
+    defer ce.mutex.RUnlock()
+
+    openViolations := 0
+    for _, violation := range ce.violations {
+        if violation.Status == "open" {
+            openViolations++
+        }
+    }
+
+    return map[string]interface{}{
+        "engine_status":       "operational",
+        "enabled_regulations": ce.config.EnabledRegulations,
+        "total_rules":         len(ce.complianceRules),
+        "open_violations":     openViolations,
+        "total_violations":    len(ce.violations),
+        "auto_remediation":    ce.config.AutoRemediation,
+        "data_classifications": len(ce.dataClassifications),
+        "recent_reports":      len(ce.reports),
+        "last_check":          time.Now().Format(time.RFC3339),
+    }
+}
+
+func max(a, b float64) float64 {
+    if a > b {
+        return a
+    }
+    return b
+}
