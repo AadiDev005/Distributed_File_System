@@ -348,7 +348,7 @@ func (ce *ComplianceEngine) generateRegulationReport(regulation string) *Complia
 	// Calculate coverage score (simplified)
 	coverageScore := 100.0
 	if violationCount > 0 {
-		coverageScore = max(0, 100.0-float64(violationCount*10))
+		coverageScore = maxFloat64(0, 100.0-float64(violationCount*10))
 	}
 
 	// Generate recommendations
@@ -440,7 +440,7 @@ func (ce *ComplianceEngine) GetComplianceStatus() map[string]interface{} {
 	}
 }
 
-func max(a, b float64) float64 {
+func maxFloat64(a, b float64) float64 {
 	if a > b {
 		return a
 	}

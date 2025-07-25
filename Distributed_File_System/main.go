@@ -37,7 +37,6 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 		StorageRoot:       listenAddr + "_enterprise_network",
 		PathTransformFunc: CASPathTransformFunc,
 		Transport:         tcpTransport,
-		BootstrapNodes:    nodes,
 	}
 
 	enterpriseOpts := EnterpriseFileServerOpts{

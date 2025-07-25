@@ -1,0 +1,21 @@
+func (c *CollabClient) cleanup(efs *EnterpriseFileServer) {
+    c.IsOnline = false
+    c.LastSeen = time.Now()
+
+    efs.collaborationMutex.Lock()
+    delete(efs.collaborationClients, c.ID)
+    efs.collaborationMutex.Unlock()
+
+    // Clean up document collaboration if user was in a document
+    if c.DocumentID != "" {
+        efs.collaborationMutex.RLock()
+        if doc, exists := efs.collaborationDocs[c.DocumentID]; exists {
+            doc.mutex.Lock()
+            delete(doc.Collaborators, c.ID)
+            doc.mutex.Unlock()
+        }
+        efs.collaborationMutex.RUnlock()
+    }
+
+    log.Printf("🔚 User disconnected from collaboration: %s", c.Name)
+}

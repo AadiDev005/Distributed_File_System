@@ -15,12 +15,14 @@ import {
   LogOut,
   Bell,
   Search,
-  User
+  User,
+  Users
 } from 'lucide-react';
 
 const navItems = [
   { href: '/dashboard', label: 'Overview', icon: Home },
   { href: '/dashboard/files', label: 'Files', icon: FolderOpen },
+  { href: '/dashboard/collaboration', label: 'Collaboration', icon: Users },
   { href: '/dashboard/security', label: 'Security', icon: Shield },
   { href: '/dashboard/compliance', label: 'Compliance', icon: FileText },
   { href: '/dashboard/network', label: 'Network', icon: Network },
@@ -82,7 +84,6 @@ export default function DashboardLayout({
     <AuthGuard>
       <QueryClientProvider client={queryClient}>
         <div className="min-h-screen bg-white">
-          {/* Apple-style Navigation */}
           <nav className="apple-nav">
             <div className="apple-container">
               <div className="flex items-center justify-between h-16">
@@ -144,7 +145,6 @@ export default function DashboardLayout({
             </div>
           </nav>
 
-          {/* Main Content */}
           <main>
             <motion.div
               initial={{ opacity: 0, y: 20 }}
