@@ -1,0 +1,1 @@
+{"id":"217a3a5d65772e479c857495f4f6a56c4030dbd1593811e2be9113acb45950f3","timestamp":"2025-07-22T22:04:00.263084+05:30","event_type":"user_login","user_id":"unknown","action":"login","result":"failure","details":{"error":"invalid credentials","username":"testuser"}}

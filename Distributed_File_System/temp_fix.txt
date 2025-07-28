@@ -1,0 +1,12 @@
+type EnterpriseFileServer struct {
+    *FileServer
+    authManager          *AuthManager
+    enterpriseEncryption *EnterpriseEncryption
+    auditLogger          *AuditLogger
+    consensusManager     *ConsensusManager
+    healthMonitor        *HealthMonitor
+    enableWebAPI         bool
+    webAPIPort           string
+    httpServer           *http.Server
+    mux                  *http.ServeMux
+}
