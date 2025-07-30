@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log"
@@ -10,7 +11,16 @@ import (
 	"github.com/anthdm/foreverstore/p2p"
 )
 
+func generateNodeID() string {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("node-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("node-%x", bytes)
+}
+
 func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *EnterpriseFileServer {
+	// CREATE TCP TRANSPORT (this was missing)
 	tcptransportOpts := p2p.TCPTransportOpts{
 		ListenAddr:    listenAddr,
 		HandshakeFunc: p2p.NOPHandshakeFunc,
@@ -18,6 +28,7 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 	}
 	tcpTransport := p2p.NewTCPTransport(tcptransportOpts)
 
+	// CREATE ENTERPRISE COMPONENTS (this was missing)
 	authManager := NewAuthManager()
 	masterKey := newEncryptionKey()
 	enterpriseEncryption := NewEnterpriseEncryption(masterKey)
@@ -32,6 +43,7 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 		log.Fatal("Failed to generate admin key:", err)
 	}
 
+	// CREATE FILE SERVER OPTIONS (this was missing)
 	fileServerOpts := FileServerOpts{
 		EncKey:            newEncryptionKey(),
 		StorageRoot:       listenAddr + "_enterprise_network",
@@ -39,6 +51,7 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 		Transport:         tcpTransport,
 	}
 
+	// CREATE ENTERPRISE OPTIONS (this was missing)
 	enterpriseOpts := EnterpriseFileServerOpts{
 		FileServerOpts:       fileServerOpts,
 		AuthManager:          authManager,
@@ -50,41 +63,29 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 
 	s := NewEnterpriseFileServer(enterpriseOpts)
 
-	// Initialize Zero-Trust Gateway
+	// Generate unique node ID for this server instance
+	nodeID := generateNodeID() + "-" + listenAddr
 
-	// Initialize Compliance Engine
-	// Initialize BFT Consensus
-	s.initializeBFTConsensus()
+	// Initialize real components with node ID
+	fmt.Printf("🔐 Initializing BFT Consensus for node %s...\n", nodeID[:16])
+	s.initializeBFTConsensus(nodeID)
 
-	// Initialize Post-Quantum Cryptography
-	s.initializePostQuantumCrypto()
+	fmt.Printf("🛡️ Initializing Post-Quantum Cryptography for node %s...\n", nodeID[:16])
+	s.initializePostQuantumCrypto(nodeID)
 
-	// Initialize Dynamic Sharding
-	s.initializeDynamicSharding()
+	fmt.Printf("📊 Initializing Dynamic Sharding for node %s...\n", nodeID[:16])
+	s.initializeDynamicSharding(nodeID)
 
-	// Initialize Advanced Zero-Trust Gateway
+	// Initialize other components
 	s.initializeAdvancedZeroTrust()
-
-	// Initialize Threshold Secret Sharing
 	s.initializeThresholdSecretSharing()
-
-	// Initialize Attribute-Based Encryption
 	s.initializeAttributeBasedEncryption()
-
-	// Initialise Continuous Authentication
 	s.initializeContinuousAuthentication()
-
-	// Initialize PII Detection Engine
 	s.initializePIIDetection()
-
-	// Initialize GDPR Compliance Engine
 	s.initializeGDPRCompliance()
-
-	// Initialize Immutable Audit Trail System
 	s.initializeImmutableAudit()
-
-	// Initialize AI-Powered Policy Recommendation Engine
 	s.initializePolicyEngine()
+
 	tcpTransport.OnPeer = s.FileServer.OnPeer
 
 	return s
