@@ -20,7 +20,7 @@ func generateNodeID() string {
 }
 
 func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *EnterpriseFileServer {
-	// CREATE TCP TRANSPORT (this was missing)
+	// CREATE TCP TRANSPORT
 	tcptransportOpts := p2p.TCPTransportOpts{
 		ListenAddr:    listenAddr,
 		HandshakeFunc: p2p.NOPHandshakeFunc,
@@ -28,12 +28,13 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 	}
 	tcpTransport := p2p.NewTCPTransport(tcptransportOpts)
 
-	// CREATE ENTERPRISE COMPONENTS (this was missing)
+	// CREATE ENTERPRISE COMPONENTS
 	authManager := NewAuthManager()
 	masterKey := newEncryptionKey()
 	enterpriseEncryption := NewEnterpriseEncryption(masterKey)
 	auditLogger := NewAuditLogger(fmt.Sprintf("%s_audit.log", listenAddr))
 
+	// Create admin user
 	adminUser, err := authManager.CreateUser("admin", "admin123", RoleSuperAdmin)
 	if err != nil {
 		log.Fatal("Failed to create admin user:", err)
@@ -43,7 +44,7 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 		log.Fatal("Failed to generate admin key:", err)
 	}
 
-	// CREATE FILE SERVER OPTIONS (this was missing)
+	// CREATE FILE SERVER OPTIONS
 	fileServerOpts := FileServerOpts{
 		EncKey:            newEncryptionKey(),
 		StorageRoot:       listenAddr + "_enterprise_network",
@@ -51,7 +52,7 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 		Transport:         tcpTransport,
 	}
 
-	// CREATE ENTERPRISE OPTIONS (this was missing)
+	// CREATE ENTERPRISE OPTIONS
 	enterpriseOpts := EnterpriseFileServerOpts{
 		FileServerOpts:       fileServerOpts,
 		AuthManager:          authManager,
@@ -86,6 +87,7 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 	s.initializeImmutableAudit()
 	s.initializePolicyEngine()
 
+	// Set up peer handling
 	tcpTransport.OnPeer = s.FileServer.OnPeer
 
 	return s
@@ -94,37 +96,61 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, nodes ...string) *Enter
 func main() {
 	fmt.Println("🚀 Starting DataVault Enterprise with BFT...")
 
+	// Create all three servers - ✅ FIXED: Changed port 5000 to 5001
 	s1 := makeEnterpriseServer(":3000", "8080", "")
 	s2 := makeEnterpriseServer(":4000", "8081", "")
-	s3 := makeEnterpriseServer(":5000", "8082", ":3000", ":4000")
+	s3 := makeEnterpriseServer(":5001", "8082", ":3000", ":4000") // ✅ Changed from :5000 to :5001
 
-	go func() { log.Fatal(s1.Start()) }()
+	// Start servers with proper error handling
+	go func() {
+		log.Printf("Starting server 1 on :3000")
+		if err := s1.Start(); err != nil {
+			log.Fatal("Server 1 failed:", err)
+		}
+	}()
 	time.Sleep(500 * time.Millisecond)
 
-	go func() { log.Fatal(s2.Start()) }()
+	go func() {
+		log.Printf("Starting server 2 on :4000")
+		if err := s2.Start(); err != nil {
+			log.Fatal("Server 2 failed:", err)
+		}
+	}()
 	time.Sleep(2 * time.Second)
 
-	go s3.Start()
-	time.Sleep(3 * time.Second)
+	go func() {
+		log.Printf("Starting server 3 on :5001") // ✅ Updated log message
+		if err := s3.Start(); err != nil {
+			log.Fatal("Server 3 failed:", err)
+		}
+	}()
+
+	// Wait longer for all servers to fully initialize
+	time.Sleep(5 * time.Second)
 
 	fmt.Println("\n=== DataVault Enterprise with BFT Demo ===")
 
-	testUser, err := s3.authManager.CreateUser("testuser", "password123", RoleUser)
+	// Create test user - use unique username to avoid conflicts
+	testUsername := fmt.Sprintf("testuser_%d", time.Now().UnixNano())
+	testUser, err := s3.authManager.CreateUser(testUsername, "password123", RoleUser)
 	if err != nil {
 		log.Fatal("Failed to create test user:", err)
 	}
 
+	// Generate user key
 	if err := s3.enterpriseEncryption.GenerateUserKey(testUser.ID); err != nil {
-		log.Fatal("Failed to generate test user key:", err)
+		log.Fatal("Failed to generate user key:", err)
 	}
 
-	session, err := s3.authManager.Login("testuser", "password123")
+	// Login test user
+	session, err := s3.authManager.Login(testUsername, "password123")
 	if err != nil {
 		log.Fatal("Failed to login:", err)
 	}
 
 	fmt.Printf("✅ Test user logged in with session: %s\n", session.ID[:8]+"...")
 
+	// Test BFT consensus file storage
 	fmt.Println("\n📁 Testing BFT consensus file storage...")
 	for i := 0; i < 3; i++ {
 		key := fmt.Sprintf("bft_doc_%d.txt", i)
@@ -137,6 +163,7 @@ func main() {
 		}
 	}
 
+	// Retrieve files
 	fmt.Println("\n📖 Retrieving BFT protected files...")
 	for i := 0; i < 3; i++ {
 		key := fmt.Sprintf("bft_doc_%d.txt", i)
@@ -150,10 +177,11 @@ func main() {
 		}
 	}
 
+	// Show audit events
 	events := s3.auditLogger.GetEvents(10)
 	fmt.Printf("\n📊 Recent Audit Events (%d total):\n", len(events))
 	for i, event := range events {
-		if i < 5 {
+		if i < 5 { // Show first 5 events
 			fmt.Printf("[%s] %s: %s - %s (User: %s)\n",
 				event.Timestamp.Format("15:04:05"),
 				event.EventType,
@@ -164,14 +192,15 @@ func main() {
 	}
 
 	fmt.Println("\n🎉 DataVault Enterprise with BFT is running!")
+
 	fmt.Println("\n🌐 Web Dashboards with BFT Status:")
 	fmt.Println("- Node 1 (P2P :3000): http://localhost:8080")
 	fmt.Println("- Node 2 (P2P :4000): http://localhost:8081")
-	fmt.Println("- Node 3 (P2P :5000): http://localhost:8082")
+	fmt.Println("- Node 3 (P2P :5001): http://localhost:8082") // ✅ Updated display message
 
 	fmt.Println("\n🔐 Test Credentials:")
 	fmt.Println("- Admin: admin / admin123")
-	fmt.Println("- User: testuser / password123")
+	fmt.Printf("- User: %s / password123\n", testUsername)
 
 	fmt.Println("\n🛡️ Byzantine Fault Tolerance Features:")
 	fmt.Println("- Consensus mechanism for file operations")
@@ -179,5 +208,6 @@ func main() {
 	fmt.Println("- Automatic byzantine node detection")
 	fmt.Println("- Fault tolerant operation with failed nodes")
 
+	// Keep the program running
 	select {}
 }
