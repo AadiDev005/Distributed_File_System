@@ -761,7 +761,7 @@ func (abe *AttributeBasedEncryptionManager) evaluateAccessPolicy(accessStructure
 	}
 
 	result.EvaluationTime = time.Since(startTime)
-    result.EvaluatedAt = time.Now()
+	result.EvaluatedAt = time.Now()
 	// Cache result if enabled
 	if abe.config.EnablePolicyCache {
 		abe.policyEngine.EvaluationCache[cacheKey] = result

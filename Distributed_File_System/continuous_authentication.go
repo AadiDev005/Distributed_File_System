@@ -46,8 +46,8 @@ type SessionTrust struct {
 /* ==== MANAGER ========================================================== */
 
 type ContinuousAuthManager struct {
-	profiles   map[string]*BehaviourProfile   // userID -> profile
-	sessions   map[string]*SessionTrust       // sessionID -> trust
+	profiles   map[string]*BehaviourProfile // userID -> profile
+	sessions   map[string]*SessionTrust     // sessionID -> trust
 	mutex      sync.RWMutex
 	server     *EnterpriseFileServer
 	decayStep  float64
@@ -238,7 +238,8 @@ func (cam *ContinuousAuthManager) decay() {
 func (efs *EnterpriseFileServer) handleContAuthEvent(w http.ResponseWriter, r *http.Request) {
 	var ev BehaviourEvent
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
-		http.Error(w, "bad JSON", 400); return
+		http.Error(w, "bad JSON", 400)
+		return
 	}
 	ev.Timestamp = time.Now()
 	efs.contAuth.IngestEvent(&ev)
@@ -248,9 +249,15 @@ func (efs *EnterpriseFileServer) handleContAuthEvent(w http.ResponseWriter, r *h
 // GET /api/cont-auth/status?session=xxx
 func (efs *EnterpriseFileServer) handleContAuthStatus(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("session")
-	if sid == "" { http.Error(w,"missing session",400); return }
+	if sid == "" {
+		http.Error(w, "missing session", 400)
+		return
+	}
 	st := efs.contAuth.GetSession(sid)
-	if st == nil { http.Error(w,"not found",404); return }
+	if st == nil {
+		http.Error(w, "not found", 404)
+		return
+	}
 	json.NewEncoder(w).Encode(st)
 }
 
