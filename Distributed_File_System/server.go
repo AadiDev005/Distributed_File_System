@@ -2,6 +2,7 @@ package main
 
 import (
 	// "errors"
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -298,43 +299,6 @@ func (efs *EnterpriseFileServer) handlePeerMessage(msg interface{}) {
 	panic("unimplemented")
 }
 
-func (efs *EnterpriseFileServer) handleFileList(w http.ResponseWriter, r *http.Request) {
-	log.Printf("📁 File list request from origin: %s", r.Header.Get("Origin"))
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	/* 1️⃣  Scan disk first – this is authoritative across ALL nodes */
-	files := efs.traverseCASStorage() // []map[string]interface{}
-
-	/* 2️⃣  Overlay richer metadata if we have it in memory */
-	efs.mu.RLock()
-	for _, f := range files {
-		id, _ := f["id"].(string)
-		if md, ok := efs.uploadedFiles[id]; ok {
-			f["owner"] = md.UserID
-			f["mimeType"] = md.MimeType
-			f["lastModified"] = md.UploadTime.Format(time.RFC3339)
-			f["shared"] = md.IsShared
-			f["status"] = "complete"
-		}
-	}
-	efs.mu.RUnlock()
-
-	log.Printf("📁 Returned %d file(s)", len(files))
-
-	/* 3️⃣  Send JSON response */
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"files":   files,
-		"total":   len(files),
-	})
-}
-
 // ✅ Helper function: Extract original filename from generated fileID
 func extractOriginalFileName(fileID string) string {
 	// FileID format: file_timestamp_originalname
@@ -510,174 +474,6 @@ func (efs *EnterpriseFileServer) getCASFilePath(fileID string) string {
 	return filepath.Join(root, fileID, fileID)
 }
 
-// ──────────────────────────────
-// REVISED  handleFileUpload
-// ──────────────────────────────
-func (efs *EnterpriseFileServer) handleFileUpload(w http.ResponseWriter, r *http.Request) {
-	log.Printf("📤 File upload request from origin: %s", r.Header.Get("Origin"))
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if err := r.ParseMultipartForm(100 << 20); err != nil { // 100 MB
-		log.Printf("❌ multipart-parse error: %v", err)
-		http.Error(w, "Failed to parse form data", http.StatusBadRequest)
-		return
-	}
-
-	files := r.MultipartForm.File["files"]
-	if len(files) == 0 {
-		http.Error(w, "No files provided", http.StatusBadRequest)
-		return
-	}
-
-	uploaded := make([]map[string]interface{}, 0, len(files))
-
-	for _, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			log.Printf("❌ open %s: %v", fh.Filename, err)
-			continue
-		}
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			log.Printf("❌ read %s: %v", fh.Filename, err)
-			continue
-		}
-
-		fileID := fh.Filename // <- **single source of truth**
-
-		if err = efs.FileServer.Store(fileID, bytes.NewReader(data)); err != nil {
-			log.Printf("❌ store %s: %v", fh.Filename, err)
-			continue
-		}
-
-		if efs.bftConsensus != nil {
-			_ = efs.bftConsensus.ProposeOperation(map[string]interface{}{
-				"type":     "file_upload",
-				"file_id":  fileID,
-				"filename": fh.Filename,
-				"size":     len(data),
-				"user_id":  "api-user",
-			})
-		}
-
-		efs.mu.Lock()
-		if efs.uploadedFiles == nil {
-			efs.uploadedFiles = map[string]*FileMetadata{}
-		}
-		efs.uploadedFiles[fileID] = &FileMetadata{
-			OriginalName: fh.Filename,
-			Size:         fh.Size,
-			UploadTime:   time.Now(),
-			UserID:       "api-user",
-			MimeType:     fh.Header.Get("Content-Type"),
-		}
-		efs.mu.Unlock()
-
-		uploaded = append(uploaded, map[string]interface{}{
-			"id":           fileID,
-			"name":         fh.Filename,
-			"type":         "file",
-			"size":         fh.Size,
-			"lastModified": time.Now().Format(time.RFC3339),
-			"owner":        "Current User",
-			"compliance":   "GDPR",
-			"encrypted":    true,
-			"shared":       false,
-			"status":       "complete",
-			"mimeType":     fh.Header.Get("Content-Type"),
-		})
-		log.Printf("✅ Uploaded %s", fh.Filename)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"files":   uploaded,
-		"total":   len(uploaded),
-	})
-}
-
-// ──────────────────────────────
-// REVISED  handleFileDelete
-// ──────────────────────────────
-// ──────────────────────────────
-func (efs *EnterpriseFileServer) handleFileDelete(w http.ResponseWriter, r *http.Request) {
-	log.Printf("🗑️  file-delete request from %s", r.Header.Get("Origin"))
-
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	fileID := r.URL.Query().Get("id")
-	if fileID == "" {
-		http.Error(w, "file id required", http.StatusBadRequest)
-		return
-	}
-	log.Printf("🗑️  delete %s", fileID)
-
-	/* 1. BFT consensus (optional) */
-	if efs.bftConsensus != nil {
-		if err := efs.bftConsensus.ProposeOperation(map[string]any{
-			"type": "file_delete", "file_id": fileID, "user_id": "api-user",
-		}); err != nil {
-			log.Printf("❌ BFT veto: %v", err)
-			http.Error(w, "consensus rejected delete", http.StatusForbidden)
-			return
-		}
-	}
-
-	/* 2. physical removal */
-	root := efs.FileServer.StorageRoot
-	if root == "" {
-		root = "./storage/shared"
-	}
-	pathKey := efs.FileServer.PathTransformFunc(fileID)
-	blobPath := filepath.Join(root, firstNonEmpty(pathKey.PathName, pathKey.Filename, fileID))
-
-	if err := os.Remove(blobPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("⚠️  disk delete error %s: %v", blobPath, err)
-	} else {
-		log.Printf("✅ removed %s from disk", blobPath)
-	}
-
-	/* 3. metadata cleanup */
-	var original string
-	efs.filesMutex.Lock()
-	if md, ok := efs.uploadedFiles[fileID]; ok {
-		original = md.OriginalName
-		delete(efs.uploadedFiles, fileID)
-	}
-	efs.filesMutex.Unlock()
-	if original == "" {
-		original = fileID
-	}
-	log.Printf("✅ deleted %s", original)
-
-	/* 4. propagate delete to peers */
-	for _, peer := range efs.peerList {
-		if peer == efs.selfAddr {
-			continue // skip myself
-		}
-		go func(p string) {
-			req, _ := http.NewRequest(http.MethodDelete,
-				fmt.Sprintf("http://%s/api/files/delete?id=%s", p, url.QueryEscape(fileID)), nil)
-			http.DefaultClient.Do(req)
-		}(peer)
-	}
-
-	/* 5. reply to caller */
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success": true,
-		"message": fmt.Sprintf("file '%s' deleted", original),
-	})
-}
-
 /* helper: returns the first non-empty string */
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
@@ -693,44 +489,101 @@ func firstNonEmpty(vals ...string) string {
 // ──────────────────────────────
 func (efs *EnterpriseFileServer) traverseCASStorage() []map[string]interface{} {
 	var files []map[string]interface{}
+	seen := make(map[string]bool) // ADD: Prevent duplicate file entries
 	root := "./storage/shared"
+
 	log.Printf("🔍 Scanning CAS storage in %s", root)
 
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || path == root {
-			return nil // skip errors & dirs
+	// ADD: Ensure directory exists
+	if err := os.MkdirAll(root, 0755); err != nil {
+		log.Printf("❌ Failed to create storage directory: %v", err)
+		return files
+	}
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		// IMPROVED: Better error handling
+		if err != nil {
+			log.Printf("⚠️ Walk error at %s: %v", path, err)
+			return nil // Continue walking instead of stopping
 		}
 
-		rel, _ := filepath.Rel(root, path)
+		// Skip directories and root
+		if info.IsDir() || path == root {
+			return nil
+		}
+
+		// IMPROVED: Better relative path handling
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			log.Printf("⚠️ Failed to get relative path for %s: %v", path, err)
+			return nil
+		}
+
+		// IMPROVED: Enhanced file ID extraction
 		fileID := efs.extractFileIDFromCASPath(rel)
 		if fileID == "" {
-			return nil // not a valid CAS entry
+			// FALLBACK: If CAS extraction fails, try direct filename
+			fileID = filepath.Base(rel)
+			if fileID == "." || fileID == ".." || fileID == "" {
+				return nil // Skip invalid entries
+			}
 		}
 
-		// Try metadata first
+		// ADD: Check for duplicates (critical fix for your duplicate file issue)
+		if seen[fileID] {
+			log.Printf("🔄 Skipping duplicate file: %s", fileID)
+			return nil
+		}
+		seen[fileID] = true
+
+		// IMPROVED: Better metadata handling with enhanced info
 		efs.mu.RLock()
-		name := fileID
+		var name string = fileID
+		var owner string = "system"
+		var mimeType string
+		var isShared bool = false
+		var uploadTime time.Time = info.ModTime()
+
 		if md, ok := efs.uploadedFiles[fileID]; ok {
 			name = md.OriginalName
+			owner = md.UserID
+			if md.MimeType != "" {
+				mimeType = md.MimeType
+			}
+			isShared = md.IsShared
+			uploadTime = md.UploadTime
 		}
 		efs.mu.RUnlock()
 
+		// FALLBACK: Detect MIME type if not in metadata
+		if mimeType == "" {
+			mimeType = efs.detectMimeTypeFromPath(path)
+		}
+
+		// IMPROVED: More comprehensive file information
 		files = append(files, map[string]interface{}{
 			"id":           fileID,
 			"name":         name,
 			"size":         info.Size(),
-			"lastModified": info.ModTime().Format(time.RFC3339),
+			"lastModified": uploadTime.Format(time.RFC3339),
 			"type":         "file",
-			"owner":        "system",
+			"owner":        owner,
 			"compliance":   "GDPR",
 			"encrypted":    true,
-			"shared":       false,
+			"shared":       isShared,
 			"status":       "complete",
-			"mimeType":     efs.detectMimeTypeFromPath(path),
+			"mimeType":     mimeType,
+			"path":         rel, // ADD: Include relative path for debugging
 		})
-		log.Printf("📄 Found CAS file %s (%d bytes)", fileID, info.Size())
+
+		log.Printf("📄 Found file %s -> %s (%d bytes)", fileID, name, info.Size())
 		return nil
 	})
+
+	// IMPROVED: Better error reporting
+	if err != nil {
+		log.Printf("❌ Storage traversal failed: %v", err)
+	}
 
 	log.Printf("🔍 CAS traversal found %d file(s)", len(files))
 	return files
@@ -799,153 +652,6 @@ func (efs *EnterpriseFileServer) extractOriginalFileName(casPath string) string 
 
 // 	log.Printf("✅ viewed %s", filename)
 // }
-
-func (efs *EnterpriseFileServer) handleFileView(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if id == "" {
-		http.Error(w, "id required", http.StatusBadRequest)
-		return
-	}
-
-	var data []byte
-
-	/* ── 1. try local CAS ─────────────────────────────── */
-	rdr, err := efs.FileServer.Get(id)
-	if err == nil {
-		defer closeIfCloser(rdr)
-		data, _ = io.ReadAll(rdr)
-	} else {
-		/* ── 2. fetch from any peer ───────────────────── */
-		rdr, err = efs.fetchFromPeers(id)
-		if err != nil {
-			http.NotFound(w, r)
-			log.Printf("❌ not found on cluster: %s", id)
-			return
-		}
-		defer closeIfCloser(rdr)
-		data, _ = io.ReadAll(rdr)
-
-		// store a local copy so the next view is instant
-		_ = efs.FileServer.Store(id, bytes.NewReader(data))
-	}
-
-	/* ── 3. serve the blob ───────────────────────────── */
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	_, _ = w.Write(data)
-	log.Printf("✅ viewed %s", id)
-}
-
-func (efs *EnterpriseFileServer) handleFileShare(w http.ResponseWriter, r *http.Request) {
-	log.Printf("🔗 File share request from origin: %s", r.Header.Get("Origin"))
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var shareReq struct {
-		FileID      string   `json:"fileId"`
-		Public      bool     `json:"public"`
-		ExpiresIn   string   `json:"expiresIn"`
-		Permissions []string `json:"permissions"`
-		Users       []string `json:"users"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&shareReq); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	// Propose file sharing through BFT consensus
-	if efs.bftConsensus != nil {
-		operation := map[string]interface{}{
-			"type":    "file_share",
-			"file_id": shareReq.FileID,
-			"public":  shareReq.Public,
-			"expires": shareReq.ExpiresIn,
-			"user_id": "api-user",
-		}
-
-		err := efs.bftConsensus.ProposeOperation(operation)
-		if err != nil {
-			log.Printf("❌ BFT consensus failed for share %s: %v", shareReq.FileID, err)
-			http.Error(w, "BFT consensus failed", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Generate secure share URL
-	shareToken := fmt.Sprintf("share_%d_%s", time.Now().UnixNano(), shareReq.FileID)
-	shareURL := fmt.Sprintf("https://datavault.example.com/shared/%s", shareToken)
-
-	response := map[string]interface{}{
-		"success":  true,
-		"shareUrl": shareURL,
-		"message":  "File shared successfully with quantum-safe encryption",
-		"token":    shareToken,
-		"expires":  shareReq.ExpiresIn,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-
-	log.Printf("✅ Successfully shared file: %s", shareReq.FileID)
-}
-
-func (efs *EnterpriseFileServer) handleFileDownload(w http.ResponseWriter, r *http.Request) {
-	log.Printf("⬇️ File download request from origin: %s", r.Header.Get("Origin"))
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	fileID := r.URL.Query().Get("id")
-	if fileID == "" {
-		http.Error(w, "File ID required", http.StatusBadRequest)
-		return
-	}
-
-	efs.mu.RLock()
-	meta, ok := efs.uploadedFiles[fileID]
-	efs.mu.RUnlock()
-	if !ok {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
-
-	if efs.bftConsensus != nil {
-		if err := efs.bftConsensus.ProposeOperation(map[string]interface{}{
-			"type":    "file_download",
-			"file_id": fileID,
-			"user_id": "api-user",
-		}); err != nil {
-			http.Error(w, "Download blocked by consensus", http.StatusForbidden)
-			return
-		}
-	}
-
-	reader, err := efs.FileServer.Get(fileID)
-	if err != nil {
-		http.Error(w, "File not found in storage", http.StatusNotFound)
-		return
-	}
-	content, _ := io.ReadAll(reader)
-
-	safeName := strings.NewReplacer("\"", "_", "\n", "", "\r", "").Replace(meta.OriginalName)
-
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", safeName))
-	w.Header().Set("Content-Type", meta.MimeType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write(content)
-
-	log.Printf("✅ Downloaded %s (%d bytes)", fileID, len(content))
-}
 
 // Initialization methods that main.go calls
 func (efs *EnterpriseFileServer) initializeBFTConsensus(nodeID string) {
@@ -1504,7 +1210,6 @@ func (efs *EnterpriseFileServer) handleBFTStatus(w http.ResponseWriter, r *http.
 }
 
 // Web API methods
-// startWebAPI initialises the HTTP API (if enabled) and registers every handler
 func (efs *EnterpriseFileServer) startWebAPI() {
 	if !efs.enableWebAPI {
 		return
@@ -1518,34 +1223,32 @@ func (efs *EnterpriseFileServer) startWebAPI() {
 	/* ── CORS / security wrapper ─────────────────── */
 	corsWrapper := func(next http.HandlerFunc) http.HandlerFunc {
 		allowed := map[string]struct{}{
-			"http://localhost:3000":  {},
-			"http://localhost:3001":  {},
-			"http://localhost:3002":  {},
-			"https://yourdomain.com": {},
+			"http://localhost:3000": {},
+			"http://localhost:3001": {},
+			"http://localhost:3002": {},
 		}
 
 		return func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 			if _, ok := allowed[origin]; ok {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-			} else if origin == "" { // same-origin or curl
+			} else if origin == "" {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 			}
 
+			// FIXED: Add missing headers for file operations
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS,PATCH")
-			w.Header().Set("Access-Control-Allow-Headers",
-				"Content-Type, Authorization, X-Session-ID, X-Requested-With, Accept, Accept-Encoding, Accept-Language, Cache-Control, Connection, Host, Origin, Referer, User-Agent")
-			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Disposition")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-ID, X-Requested-With, Accept")
+			w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.Header().Set("Access-Control-Max-Age", "3600")
 
-			// security headers
+			// Security headers
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-Frame-Options", "DENY")
-			w.Header().Set("X-XSS-Protection", "1; mode=block")
 
 			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(http.StatusNoContent) // Changed from StatusOK
 				return
 			}
 			next(w, r)
@@ -1566,8 +1269,6 @@ func (efs *EnterpriseFileServer) startWebAPI() {
 	efs.mux.HandleFunc("/api/files/view", corsWrapper(efs.handleFileView))
 	efs.mux.HandleFunc("/api/files/share", corsWrapper(efs.handleFileShare))
 	efs.mux.HandleFunc("/api/files/metadata", corsWrapper(efs.handleFileMetadata))
-
-	// SINGLE authoritative delete path – matches dashboard & peer broadcast
 	efs.mux.HandleFunc("/api/files/delete", corsWrapper(efs.handleFileDelete))
 
 	/* ── misc / raw / static ─────────────────────── */
@@ -1578,14 +1279,32 @@ func (efs *EnterpriseFileServer) startWebAPI() {
 		w.Write([]byte(`{"status":"ok","ts":"` + time.Now().Format(time.RFC3339) + `"}`))
 	}))
 
-	/* ── HTTP server ─────────────────────────────── */
+	/* ── HTTP server with connection limits ─────────────────────────────── */
 	efs.httpServer = &http.Server{
 		Addr:           ":" + efs.webAPIPort,
 		Handler:        efs.mux,
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second,
-		IdleTimeout:    120 * time.Second,
+		IdleTimeout:    60 * time.Second, // Reduced from 120s
 		MaxHeaderBytes: 1 << 20,
+		// ADD: Connection state tracking to prevent fd leaks
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateClosed, http.StateHijacked:
+				conn.Close()
+			}
+		},
+	}
+
+	// ADD: Configure HTTP client with connection limits
+	http.DefaultClient = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        50,
+			MaxIdleConnsPerHost: 5,
+			IdleConnTimeout:     30 * time.Second,
+			DisableKeepAlives:   true, // Temporary fix for fd leaks
+		},
+		Timeout: 30 * time.Second,
 	}
 
 	log.Printf("[%s] 🚀 DataVault Enterprise Web API on %s",
@@ -1596,6 +1315,837 @@ func (efs *EnterpriseFileServer) startWebAPI() {
 			log.Printf("❌ Web API failed: %v", err)
 		}
 	}()
+}
+
+// Add this debugging function
+// REPLACE your debugFilePath function with this corrected version:
+func (efs *EnterpriseFileServer) debugFilePath(fileID string) {
+	root := efs.FileServer.StorageRoot
+	if root == "" {
+		root = "./storage/shared"
+	}
+
+	pathKey := efs.FileServer.PathTransformFunc(fileID)
+	blobPath := filepath.Join(root, firstNonEmpty(pathKey.PathName, pathKey.Filename, fileID))
+
+	log.Printf("🔍 DEBUG: FileID: %s", fileID)
+	log.Printf("🔍 DEBUG: Root directory: %s", root)
+	log.Printf("🔍 DEBUG: PathKey.PathName: %s", pathKey.PathName)
+	log.Printf("🔍 DEBUG: PathKey.Filename: %s", pathKey.Filename)
+	log.Printf("🔍 DEBUG: Computed deletion path: %s", blobPath)
+
+	// FIXED: Actually list the files in the directory
+	if entries, err := os.ReadDir(root); err == nil {
+		log.Printf("🔍 DEBUG: Files in %s:", root)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				info, _ := entry.Info()
+				log.Printf("🔍 DEBUG: - %s (%d bytes)", entry.Name(), info.Size())
+			}
+		}
+	} else {
+		log.Printf("🔍 DEBUG: Failed to read directory %s: %v", root, err)
+	}
+
+	// ADDED: Check if computed path actually exists
+	if info, err := os.Stat(blobPath); err == nil {
+		log.Printf("🔍 DEBUG: ✅ Computed path EXISTS: %d bytes", info.Size())
+	} else {
+		log.Printf("🔍 DEBUG: ❌ Computed path MISSING: %v", err)
+	}
+}
+
+func (efs *EnterpriseFileServer) handleFiles(w http.ResponseWriter, r *http.Request) {
+	// ADD CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Session-ID")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	sessionID := r.Header.Get("X-Session-ID")
+	if sessionID == "" {
+		http.Error(w, "Session ID required", http.StatusUnauthorized)
+		return
+	}
+
+	switch r.Method {
+	case "POST":
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Key parameter required", http.StatusBadRequest)
+			return
+		}
+
+		// READ body with size limit
+		body := http.MaxBytesReader(w, r.Body, 32<<20) // 32MB limit
+		err := efs.AuthenticatedStore(sessionID, key, body)
+		if err != nil {
+			log.Printf("❌ Authenticated store failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "stored",
+			"key":     key,
+			"message": "File stored successfully",
+		})
+
+	case "GET":
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Key parameter required", http.StatusBadRequest)
+			return
+		}
+
+		reader, err := efs.AuthenticatedGet(sessionID, key)
+		if err != nil {
+			log.Printf("❌ Authenticated get failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer closeIfCloser(reader)
+
+		// Set appropriate headers
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", key))
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+
+		_, err = io.Copy(w, reader)
+		if err != nil {
+			log.Printf("❌ Failed to stream file: %v", err)
+		}
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (efs *EnterpriseFileServer) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📋 File metadata request from origin: %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileID := r.URL.Query().Get("id")
+	if fileID == "" {
+		http.Error(w, "File ID required", http.StatusBadRequest)
+		return
+	}
+
+	efs.mu.RLock()
+	meta, ok := efs.uploadedFiles[fileID]
+	efs.mu.RUnlock()
+
+	if !ok {
+		// Try to get file info from disk
+		reader, err := efs.FileServer.Get(fileID)
+		if err != nil {
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+		closeIfCloser(reader)
+
+		// Create basic metadata from disk info
+		root := efs.FileServer.StorageRoot
+		if root == "" {
+			root = "./storage/shared"
+		}
+
+		pathKey := efs.FileServer.PathTransformFunc(fileID)
+		filePath := filepath.Join(root, firstNonEmpty(pathKey.PathName, pathKey.Filename, fileID))
+
+		fileInfo, err := os.Stat(filePath)
+		if err != nil {
+			http.Error(w, "File info not available", http.StatusNotFound)
+			return
+		}
+
+		metadata := map[string]interface{}{
+			"file": map[string]interface{}{
+				"id":        fileID,
+				"name":      fileID,
+				"size":      fileInfo.Size(),
+				"created":   fileInfo.ModTime().Format(time.RFC3339),
+				"modified":  fileInfo.ModTime().Format(time.RFC3339),
+				"owner":     "system",
+				"encrypted": true,
+				"shared":    false,
+				"mimeType":  efs.detectMimeTypeFromPath(fileID),
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(metadata)
+		return
+	}
+
+	// Return full metadata
+	metadata := map[string]interface{}{
+		"file": map[string]interface{}{
+			"id":        fileID,
+			"name":      meta.OriginalName,
+			"size":      meta.Size,
+			"created":   meta.UploadTime.Format(time.RFC3339),
+			"modified":  meta.UploadTime.Format(time.RFC3339),
+			"owner":     meta.UserID,
+			"encrypted": true,
+			"shared":    meta.IsShared,
+			"mimeType":  meta.MimeType,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metadata)
+}
+
+func (efs *EnterpriseFileServer) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	log.Printf("⬇️ File download request from origin: %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileID := r.URL.Query().Get("id")
+	if fileID == "" {
+		http.Error(w, "File ID required", http.StatusBadRequest)
+		return
+	}
+
+	efs.mu.RLock()
+	meta, ok := efs.uploadedFiles[fileID]
+	efs.mu.RUnlock()
+
+	if !ok {
+		// Try to find file on disk even without metadata
+		reader, err := efs.FileServer.Get(fileID)
+		if err != nil {
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+		closeIfCloser(reader)
+
+		// Create minimal metadata
+		meta = &FileMetadata{
+			OriginalName: fileID,
+			MimeType:     "application/octet-stream",
+		}
+	}
+
+	if efs.bftConsensus != nil {
+		if err := efs.bftConsensus.ProposeOperation(map[string]interface{}{
+			"type":    "file_download",
+			"file_id": fileID,
+			"user_id": "api-user",
+		}); err != nil {
+			http.Error(w, "Download blocked by consensus", http.StatusForbidden)
+			return
+		}
+	}
+
+	reader, err := efs.FileServer.Get(fileID)
+	if err != nil {
+		http.Error(w, "File not found in storage", http.StatusNotFound)
+		return
+	}
+	defer closeIfCloser(reader)
+
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		http.Error(w, "Failed to read file content", http.StatusInternalServerError)
+		return
+	}
+
+	// Sanitize filename for download
+	safeName := strings.NewReplacer("\"", "_", "\n", "", "\r", "", "/", "_", "\\", "_").Replace(meta.OriginalName)
+
+	// Set appropriate MIME type
+	mimeType := meta.MimeType
+	if mimeType == "" {
+		mimeType = efs.detectMimeTypeFromPath(safeName)
+	}
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", safeName))
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	_, _ = w.Write(content)
+	log.Printf("✅ Downloaded %s (%d bytes)", safeName, len(content))
+}
+
+func (efs *EnterpriseFileServer) handleFileShare(w http.ResponseWriter, r *http.Request) {
+	log.Printf("🔗 File share request from origin: %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var shareReq struct {
+		FileID      string   `json:"fileId"`
+		Public      bool     `json:"public"`
+		ExpiresIn   string   `json:"expiresIn"`
+		Permissions []string `json:"permissions"`
+		Users       []string `json:"users"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&shareReq); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Validate file exists
+	efs.mu.RLock()
+	_, exists := efs.uploadedFiles[shareReq.FileID]
+	efs.mu.RUnlock()
+
+	if !exists {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	// Propose file sharing through BFT consensus
+	if efs.bftConsensus != nil {
+		operation := map[string]interface{}{
+			"type":    "file_share",
+			"file_id": shareReq.FileID,
+			"public":  shareReq.Public,
+			"expires": shareReq.ExpiresIn,
+			"user_id": "api-user",
+		}
+
+		err := efs.bftConsensus.ProposeOperation(operation)
+		if err != nil {
+			log.Printf("❌ BFT consensus failed for share %s: %v", shareReq.FileID, err)
+			http.Error(w, "BFT consensus failed", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Generate secure share URL with better token
+	shareToken := fmt.Sprintf("share_%d_%s", time.Now().UnixNano(),
+		shareReq.FileID[len(shareReq.FileID)-8:]) // Last 8 chars of fileID
+	shareURL := fmt.Sprintf("https://datavault.example.com/shared/%s", shareToken)
+
+	// Update file metadata to mark as shared
+	efs.mu.Lock()
+	if md, ok := efs.uploadedFiles[shareReq.FileID]; ok {
+		md.IsShared = true
+	}
+	efs.mu.Unlock()
+
+	response := map[string]interface{}{
+		"success":  true,
+		"shareUrl": shareURL,
+		"message":  "File shared successfully with quantum-safe encryption",
+		"token":    shareToken,
+		"expires":  shareReq.ExpiresIn,
+		"public":   shareReq.Public,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+
+	log.Printf("✅ Successfully shared file: %s", shareReq.FileID)
+}
+
+func (efs *EnterpriseFileServer) handleFileView(w http.ResponseWriter, r *http.Request) {
+	log.Printf("👁️ file-view request from %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+
+	var data []byte
+	var filename string = id
+
+	// Get metadata for better filename
+	efs.mu.RLock()
+	if md, ok := efs.uploadedFiles[id]; ok {
+		filename = md.OriginalName
+	}
+	efs.mu.RUnlock()
+
+	/* ── 1. try local CAS ─────────────────────────────── */
+	rdr, err := efs.FileServer.Get(id)
+	if err == nil {
+		defer closeIfCloser(rdr)
+		data, err = io.ReadAll(rdr)
+		if err != nil {
+			http.Error(w, "Failed to read file", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		/* ── 2. fetch from any peer ───────────────────── */
+		rdr, err = efs.fetchFromPeers(id)
+		if err != nil {
+			http.NotFound(w, r)
+			log.Printf("❌ not found on cluster: %s", id)
+			return
+		}
+		defer closeIfCloser(rdr)
+		data, err = io.ReadAll(rdr)
+		if err != nil {
+			http.Error(w, "Failed to read file from peer", http.StatusInternalServerError)
+			return
+		}
+
+		// store a local copy so the next view is instant
+		_ = efs.FileServer.Store(id, bytes.NewReader(data))
+	}
+
+	/* ── 3. serve the blob with proper headers ───────────────────────────────── */
+	mimeType := efs.detectMimeTypeFromPath(filename)
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+
+	_, _ = w.Write(data)
+	log.Printf("✅ viewed %s (%s, %d bytes)", filename, mimeType, len(data))
+}
+
+func (efs *EnterpriseFileServer) handleFileList(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📁 File list request from origin: %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	/* 1️⃣ Scan disk first – this is authoritative across ALL nodes */
+	files := efs.traverseCASStorage()
+
+	/* 2️⃣ Overlay richer metadata if we have it in memory */
+	efs.mu.RLock()
+	for _, f := range files {
+		id, _ := f["id"].(string)
+		if md, ok := efs.uploadedFiles[id]; ok {
+			f["owner"] = md.UserID
+			f["mimeType"] = md.MimeType
+			f["lastModified"] = md.UploadTime.Format(time.RFC3339)
+			f["shared"] = md.IsShared
+			f["status"] = "complete"
+			f["name"] = md.OriginalName // Use stored original name
+		}
+	}
+	efs.mu.RUnlock()
+
+	log.Printf("📁 Returned %d file(s)", len(files))
+
+	/* 3️⃣ Send JSON response */
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"files":   files,
+		"total":   len(files),
+	})
+}
+
+func (efs *EnterpriseFileServer) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📤 File upload request from origin: %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// ADD: Parse with size limit and proper error handling
+	if err := r.ParseMultipartForm(32 << 20); err != nil { // 32MB max
+		log.Printf("❌ multipart-parse error: %v", err)
+		http.Error(w, "Failed to parse form data", http.StatusBadRequest)
+		return
+	}
+
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		// TRY ALTERNATIVE: single file upload
+		files = r.MultipartForm.File["file"]
+		if len(files) == 0 {
+			http.Error(w, "No files provided", http.StatusBadRequest)
+			return
+		}
+	}
+
+	uploaded := make([]map[string]interface{}, 0, len(files))
+
+	// ADD: Mutex to prevent concurrent upload issues
+	efs.mu.Lock()
+	defer efs.mu.Unlock()
+
+	for _, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			log.Printf("❌ open %s: %v", fh.Filename, err)
+			continue
+		}
+
+		data, err := io.ReadAll(f)
+		f.Close() // Close immediately after reading
+		if err != nil {
+			log.Printf("❌ read %s: %v", fh.Filename, err)
+			continue
+		}
+
+		// ENSURE CONSISTENT FILE ID GENERATION
+		fileID := fmt.Sprintf("file_%d_%s", time.Now().UnixNano(), fh.Filename)
+
+		if err = efs.FileServer.Store(fileID, bytes.NewReader(data)); err != nil {
+			log.Printf("❌ store %s: %v", fh.Filename, err)
+			continue
+		}
+
+		if efs.bftConsensus != nil {
+			_ = efs.bftConsensus.ProposeOperation(map[string]interface{}{
+				"type":     "file_upload",
+				"file_id":  fileID,
+				"filename": fh.Filename,
+				"size":     len(data),
+				"user_id":  "api-user",
+			})
+		}
+
+		// Ensure uploadedFiles map exists
+		if efs.uploadedFiles == nil {
+			efs.uploadedFiles = make(map[string]*FileMetadata)
+		}
+
+		efs.uploadedFiles[fileID] = &FileMetadata{
+			OriginalName: fh.Filename,
+			Size:         int64(len(data)), // Use actual data size
+			UploadTime:   time.Now(),
+			UserID:       "api-user",
+			MimeType:     fh.Header.Get("Content-Type"),
+		}
+
+		uploaded = append(uploaded, map[string]interface{}{
+			"id":           fileID,
+			"name":         fh.Filename,
+			"type":         "file",
+			"size":         len(data),
+			"lastModified": time.Now().Format(time.RFC3339),
+			"owner":        "Current User",
+			"compliance":   "GDPR",
+			"encrypted":    true,
+			"shared":       false,
+			"status":       "complete",
+			"mimeType":     fh.Header.Get("Content-Type"),
+		})
+		log.Printf("✅ Uploaded %s", fh.Filename)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"files":   uploaded,
+		"total":   len(uploaded),
+	})
+}
+
+func (efs *EnterpriseFileServer) handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	log.Printf("🗑️ file-delete request from %s", r.Header.Get("Origin"))
+
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileID := r.URL.Query().Get("id")
+	if fileID == "" {
+		http.Error(w, "file id required", http.StatusBadRequest)
+		return
+	}
+
+	// Debug file paths (with corrected implementation)
+	efs.debugFilePath(fileID)
+
+	// Check if this is a peer deletion request
+	isPeerRequest := r.Header.Get("X-Peer-Request") == "true"
+
+	log.Printf("🗑️ delete %s (peer request: %v)", fileID, isPeerRequest)
+
+	// 1. Remove from metadata first
+	efs.mu.Lock()
+	if efs.uploadedFiles == nil {
+		efs.uploadedFiles = make(map[string]*FileMetadata)
+	}
+
+	metadata, exists := efs.uploadedFiles[fileID]
+	if exists {
+		delete(efs.uploadedFiles, fileID)
+		log.Printf("🗑️ Removed %s from metadata", fileID)
+	} else {
+		log.Printf("⚠️ File %s not found in metadata, proceeding with disk deletion", fileID)
+	}
+	efs.mu.Unlock()
+
+	// 2. BFT consensus (only for primary delete request)
+	if efs.bftConsensus != nil && !isPeerRequest {
+		if err := efs.bftConsensus.ProposeOperation(map[string]any{
+			"type": "file_delete", "file_id": fileID, "user_id": "api-user",
+		}); err != nil {
+			log.Printf("❌ BFT veto: %v", err)
+			http.Error(w, "consensus rejected delete", http.StatusForbidden)
+			return
+		}
+	}
+
+	// 3. ENHANCED CRITICAL FIX: Comprehensive physical removal
+	root := efs.FileServer.StorageRoot
+	if root == "" {
+		root = "./storage/shared"
+	}
+
+	fileDeleted := false
+
+	// ATTEMPT 1: Use PathTransformFunc (current method)
+	pathKey := efs.FileServer.PathTransformFunc(fileID)
+	blobPath := filepath.Join(root, firstNonEmpty(pathKey.PathName, pathKey.Filename, fileID))
+
+	log.Printf("🔍 Attempting to delete: %s", blobPath)
+	if err := os.Remove(blobPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("⚠️ PathTransform deletion failed %s: %v", blobPath, err)
+		} else {
+			log.Printf("📁 File %s not found via PathTransform", blobPath)
+		}
+	} else {
+		log.Printf("✅ Successfully removed via PathTransform: %s", blobPath)
+		fileDeleted = true
+	}
+
+	// ATTEMPT 2: Try direct filename (fallback)
+	if !fileDeleted {
+		directPath := filepath.Join(root, fileID)
+		log.Printf("🔍 Attempting direct deletion: %s", directPath)
+		if err := os.Remove(directPath); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				log.Printf("⚠️ Direct deletion failed %s: %v", directPath, err)
+			} else {
+				log.Printf("📁 File %s not found directly", directPath)
+			}
+		} else {
+			log.Printf("✅ Successfully removed directly: %s", directPath)
+			fileDeleted = true
+		}
+	}
+
+	// ATTEMPT 3: Enhanced comprehensive search and destroy
+	if !fileDeleted {
+		log.Printf("🔍 Comprehensive search for file...")
+
+		// Search multiple possible locations
+		searchPaths := []string{
+			"./storage/shared",
+			"./storage",
+			"storage/shared",
+			"storage",
+		}
+
+		for _, searchPath := range searchPaths {
+			if fileDeleted {
+				break
+			}
+
+			log.Printf("🔍 Searching in: %s", searchPath)
+
+			if entries, err := os.ReadDir(searchPath); err == nil {
+				for _, entry := range entries {
+					if entry.IsDir() {
+						// Search subdirectories too
+						subPath := filepath.Join(searchPath, entry.Name())
+						log.Printf("🔍 Searching subdirectory: %s", subPath)
+
+						if subEntries, subErr := os.ReadDir(subPath); subErr == nil {
+							for _, subEntry := range subEntries {
+								if !subEntry.IsDir() {
+									fileName := subEntry.Name()
+									// More flexible matching
+									if fileName == fileID ||
+										strings.Contains(fileName, fileID) ||
+										strings.Contains(fileID, fileName) ||
+										strings.HasSuffix(fileName, filepath.Base(fileID)) {
+
+										fullPath := filepath.Join(subPath, fileName)
+										log.Printf("🎯 Found matching file in subdirectory: %s", fullPath)
+
+										if err := os.Remove(fullPath); err != nil {
+											log.Printf("⚠️ Subdirectory deletion failed %s: %v", fullPath, err)
+										} else {
+											log.Printf("✅ Successfully removed via subdirectory search: %s", fullPath)
+											fileDeleted = true
+											break
+										}
+									}
+								}
+							}
+						} else {
+							log.Printf("⚠️ Could not read subdirectory %s: %v", subPath, subErr)
+						}
+
+						if fileDeleted {
+							break
+						}
+					} else {
+						// Check files in current directory
+						fileName := entry.Name()
+						// More flexible matching
+						if fileName == fileID ||
+							strings.Contains(fileName, fileID) ||
+							strings.Contains(fileID, fileName) ||
+							strings.HasSuffix(fileName, filepath.Base(fileID)) {
+
+							fullPath := filepath.Join(searchPath, fileName)
+							log.Printf("🎯 Found matching file: %s", fullPath)
+
+							if err := os.Remove(fullPath); err != nil {
+								log.Printf("⚠️ Search deletion failed %s: %v", fullPath, err)
+							} else {
+								log.Printf("✅ Successfully removed via search: %s", fullPath)
+								fileDeleted = true
+								break
+							}
+						}
+					}
+				}
+			} else {
+				log.Printf("⚠️ Could not read directory %s: %v", searchPath, err)
+			}
+		}
+	}
+
+	// ATTEMPT 4: Last resort - Manual filesystem walk (FIXED VERSION)
+	if !fileDeleted {
+		log.Printf("🔍 Last resort: Manual file system cleanup...")
+
+		// Try to find and delete any files that match the pattern using filepath.WalkDir
+		walkErr := filepath.WalkDir("./storage", func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // Continue walking even if there's an error
+			}
+
+			if !d.IsDir() {
+				fileName := d.Name()
+				// Check if this file matches our target
+				if fileName == fileID ||
+					strings.Contains(fileName, fileID) ||
+					strings.Contains(fileID, fileName) ||
+					strings.HasSuffix(fileName, filepath.Base(fileID)) {
+
+					log.Printf("🎯 Found file during cleanup walk: %s", path)
+					if rmErr := os.Remove(path); rmErr != nil {
+						log.Printf("⚠️ Cleanup deletion failed %s: %v", path, rmErr)
+					} else {
+						log.Printf("✅ Successfully removed via cleanup: %s", path)
+						fileDeleted = true
+						return filepath.SkipAll // Stop walking, file found and deleted
+					}
+				}
+			}
+			return nil
+		})
+
+		if walkErr != nil {
+			log.Printf("⚠️ Cleanup walk failed: %v", walkErr)
+		}
+	}
+
+	if !fileDeleted {
+		log.Printf("❌ CRITICAL: File %s could not be deleted from disk!", fileID)
+		// Don't return error to frontend - file might be already deleted elsewhere
+	}
+
+	// 4. Get original name for response (enhanced)
+	var original string
+	if metadata != nil {
+		original = metadata.OriginalName
+	} else {
+		// Enhanced original name extraction
+		if strings.HasPrefix(fileID, "file_") {
+			parts := strings.SplitN(fileID, "_", 3)
+			if len(parts) == 3 {
+				original = parts[2]
+			} else {
+				original = fileID
+			}
+		} else {
+			original = fileID
+		}
+	}
+
+	log.Printf("✅ deleted %s (disk deletion: %v)", original, fileDeleted)
+
+	// 5. Propagate delete to peers (only if not a peer request)
+	if !isPeerRequest {
+		propagatedCount := 0
+		for _, peer := range efs.peerList {
+			if peer == efs.selfAddr {
+				continue
+			}
+			go func(p string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+					fmt.Sprintf("http://%s/api/files/delete?id=%s", p, url.QueryEscape(fileID)), nil)
+				if err != nil {
+					log.Printf("⚠️ Failed to create delete request for peer %s: %v", p, err)
+					return
+				}
+
+				req.Header.Set("X-Peer-Request", "true")
+
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					log.Printf("⚠️ Failed to propagate delete to peer %s: %v", p, err)
+				} else {
+					resp.Body.Close()
+					log.Printf("📡 Delete propagated to peer %s", p)
+				}
+			}(peer)
+			propagatedCount++
+		}
+		log.Printf("📡 Delete propagated to %d peers", propagatedCount)
+	}
+
+	// 6. Reply to caller with enhanced response
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"success":           true,
+		"message":           fmt.Sprintf("file '%s' deleted", original),
+		"fileId":            fileID,
+		"originalName":      original,
+		"deletedFromDisk":   fileDeleted,
+		"hadMetadata":       exists,
+		"propagatedToPeers": !isPeerRequest,
+		"searchAttempts":    "comprehensive",
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("⚠️ Failed to encode delete response: %v", err)
+	}
 }
 
 func (efs *EnterpriseFileServer) rawFile(w http.ResponseWriter, r *http.Request) {
@@ -1665,36 +2215,6 @@ func (efs *EnterpriseFileServer) handleValidateSession(w http.ResponseWriter, r 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
-}
-
-func (efs *EnterpriseFileServer) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	fileID := r.URL.Query().Get("id")
-	if fileID == "" {
-		http.Error(w, "File ID required", http.StatusBadRequest)
-		return
-	}
-
-	// Implement metadata retrieval logic here
-	metadata := map[string]interface{}{
-		"file": map[string]interface{}{
-			"id":        fileID,
-			"name":      "example.pdf",
-			"size":      1024000,
-			"created":   time.Now().Format(time.RFC3339),
-			"modified":  time.Now().Format(time.RFC3339),
-			"owner":     "Current User",
-			"encrypted": true,
-			"shared":    false,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metadata)
 }
 
 func (efs *EnterpriseFileServer) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
@@ -1819,52 +2339,6 @@ func (efs *EnterpriseFileServer) handleHealth(w http.ResponseWriter, r *http.Req
 			"dynamic_sharding",
 		},
 	})
-}
-
-func (efs *EnterpriseFileServer) handleFiles(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.Header.Get("X-Session-ID")
-	if sessionID == "" {
-		http.Error(w, "Session ID required", http.StatusUnauthorized)
-		return
-	}
-
-	switch r.Method {
-	case "POST":
-		key := r.URL.Query().Get("key")
-		if key == "" {
-			http.Error(w, "Key parameter required", http.StatusBadRequest)
-			return
-		}
-
-		err := efs.AuthenticatedStore(sessionID, key, r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"status": "stored", "key": key})
-
-	case "GET":
-		key := r.URL.Query().Get("key")
-		if key == "" {
-			http.Error(w, "Key parameter required", http.StatusBadRequest)
-			return
-		}
-
-		reader, err := efs.AuthenticatedGet(sessionID, key)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", key))
-		io.Copy(w, reader)
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
 }
 
 func (efs *EnterpriseFileServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
