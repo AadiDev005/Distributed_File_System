@@ -655,6 +655,89 @@ func (pde *PIIDetectionEngine) modelMaintenanceLoop() {
 	}
 }
 
+// GetDetectionAccuracy returns the overall detection accuracy
+func (pde *PIIDetectionEngine) GetDetectionAccuracy() float64 {
+	pde.mutex.RLock()
+	defer pde.mutex.RUnlock()
+
+	if len(pde.detectionModels) == 0 {
+		return 0.0
+	}
+
+	totalAccuracy := 0.0
+	activeModels := 0
+
+	for _, model := range pde.detectionModels {
+		if model.IsActive {
+			totalAccuracy += model.Accuracy
+			activeModels++
+		}
+	}
+
+	if activeModels == 0 {
+		return 0.0
+	}
+
+	return (totalAccuracy / float64(activeModels)) * 100 // Convert to percentage
+}
+
+// GetRecentScans returns recent PII detection scan results
+func (pde *PIIDetectionEngine) GetRecentScans(limit int) []PIIDetectionResult {
+	pde.mutex.RLock()
+	defer pde.mutex.RUnlock()
+
+	var results []PIIDetectionResult
+
+	// Convert map to slice and sort by scan time (most recent first)
+	for _, result := range pde.detectionResults {
+		results = append(results, *result)
+	}
+
+	// Simple sorting by scan time (newest first)
+	for i := 0; i < len(results)-1; i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[i].ScanTime.Before(results[j].ScanTime) {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+
+	// Apply limit
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+
+	return results
+}
+
+// GetDetectionModels returns all detection models
+func (pde *PIIDetectionEngine) GetDetectionModels() []DetectionModel {
+	pde.mutex.RLock()
+	defer pde.mutex.RUnlock()
+
+	var models []DetectionModel
+
+	for _, model := range pde.detectionModels {
+		// Create a copy to avoid exposing internal pointers
+		modelCopy := DetectionModel{
+			ModelID:          model.ModelID,
+			ModelName:        model.ModelName,
+			ModelType:        model.ModelType,
+			Accuracy:         model.Accuracy,
+			PIITypes:         append([]string(nil), model.PIITypes...),
+			TrainingData:     model.TrainingData,
+			LastTrained:      model.LastTrained,
+			Version:          model.Version,
+			IsActive:         model.IsActive,
+			ConfidenceThresh: model.ConfidenceThresh,
+			// Don't expose Patterns (contains regex pointers)
+		}
+		models = append(models, modelCopy)
+	}
+
+	return models
+}
+
 // Get PII Detection status
 func (pde *PIIDetectionEngine) GetPIIDetectionStatus() map[string]interface{} {
 	pde.mutex.RLock()

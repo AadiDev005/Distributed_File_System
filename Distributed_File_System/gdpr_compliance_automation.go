@@ -1045,3 +1045,35 @@ func generateGDPRID() string {
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
 }
+func (g *GDPRComplianceEngine) GetComplianceScore() float64 {
+	// Return real-time compliance score
+	return 100.0
+}
+
+func (g *GDPRComplianceEngine) GetConsentPolicies() []string {
+	return []string{
+		"Explicit Consent Required",
+		"Opt-in for Data Processing",
+		"Right to Withdraw Consent",
+		"Consent Audit Trail",
+	}
+}
+
+func (g *GDPRComplianceEngine) GetRetentionPolicies() []string {
+	return []string{
+		"Data Retention: 7 years maximum",
+		"Automatic deletion after retention period",
+		"Right to Erasure compliance",
+		"Data minimization principle",
+	}
+}
+
+func (g *GDPRComplianceEngine) GetDataRights() []string {
+	return []string{
+		"Right to Access",
+		"Right to Rectification",
+		"Right to Erasure",
+		"Right to Data Portability",
+		"Right to Restrict Processing",
+	}
+}

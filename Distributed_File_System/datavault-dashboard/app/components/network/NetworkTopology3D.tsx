@@ -5,6 +5,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Text, Sphere, Box, Line } from '@react-three/drei';
 import { motion } from 'framer-motion';
 import * as THREE from 'three';
+import { NetworkTopologyService } from '../../lib/network/networkTopologyService';
 
 // ✅ Type definitions
 type NodeStatus = 'online' | 'warning' | 'offline' | 'maintenance';
@@ -43,113 +44,6 @@ interface NetworkConnection {
   status: string;
   utilization: number;
 }
-
-// ✅ ENHANCED: More spread out node positions for better 3D visibility
-const createMockNetworkData = () => ({
-  nodes: [
-    {
-      id: 'datacenter-1',
-      name: 'Primary DC',
-      type: 'datacenter' as NodeType,
-      status: 'online' as NodeStatus,
-      region: 'US-East',
-      country: 'United States',
-      position: { x: 0, y: 0, z: 0 },
-      metrics: {
-        cpu: 45.2, memory: 67.8, latency: 12.5, uptime: 99.98,
-        throughput: 8.5, connections: 1247, bandwidth: 100000
-      },
-      security: {
-        threatLevel: 'low' as ThreatLevel,
-        encryptionStatus: 'quantum-resistant' as EncryptionStatus,
-        complianceLevel: 98
-      }
-    },
-    {
-      id: 'edge-1',
-      name: 'Edge SF',
-      type: 'edge' as NodeType,
-      status: 'online' as NodeStatus,
-      region: 'US-West',
-      country: 'United States',
-      position: { x: -6, y: 3, z: 4 },
-      metrics: {
-        cpu: 32.1, memory: 54.3, latency: 8.2, uptime: 99.95,
-        throughput: 5.2, connections: 892, bandwidth: 50000
-      },
-      security: {
-        threatLevel: 'low' as ThreatLevel,
-        encryptionStatus: 'quantum-resistant' as EncryptionStatus,
-        complianceLevel: 96
-      }
-    },
-    {
-      id: 'gateway-1',
-      name: 'Gateway EU',
-      type: 'gateway' as NodeType,
-      status: 'online' as NodeStatus,
-      region: 'EU-Central',
-      country: 'Germany',
-      position: { x: 6, y: -2, z: -5 },
-      metrics: {
-        cpu: 58.7, memory: 71.2, latency: 15.8, uptime: 99.92,
-        throughput: 6.8, connections: 1543, bandwidth: 75000
-      },
-      security: {
-        threatLevel: 'medium' as ThreatLevel,
-        encryptionStatus: 'quantum-resistant' as EncryptionStatus,
-        complianceLevel: 94
-      }
-    },
-    {
-      id: 'cdn-1',
-      name: 'CDN Asia',
-      type: 'cdn' as NodeType,
-      status: 'warning' as NodeStatus,
-      region: 'Asia-Pacific',
-      country: 'Singapore',
-      position: { x: 4, y: 5, z: -3 },
-      metrics: {
-        cpu: 78.4, memory: 85.7, latency: 32.1, uptime: 99.89,
-        throughput: 12.3, connections: 2156, bandwidth: 120000
-      },
-      security: {
-        threatLevel: 'medium' as ThreatLevel,
-        encryptionStatus: 'quantum-resistant' as EncryptionStatus,
-        complianceLevel: 92
-      }
-    },
-    {
-      id: 'client-1',
-      name: 'Client LA',
-      type: 'client' as NodeType,
-      status: 'online' as NodeStatus,
-      region: 'US-West',
-      country: 'United States',
-      position: { x: -4, y: -5, z: 3 },
-      metrics: {
-        cpu: 23.1, memory: 34.5, latency: 5.2, uptime: 99.99,
-        throughput: 2.1, connections: 156, bandwidth: 10000
-      },
-      security: {
-        threatLevel: 'low' as ThreatLevel,
-        encryptionStatus: 'standard' as EncryptionStatus,
-        complianceLevel: 88
-      }
-    }
-  ],
-  connections: [
-    { id: 'conn-1', source: 'datacenter-1', target: 'edge-1', status: 'active', utilization: 65 },
-    { id: 'conn-2', source: 'datacenter-1', target: 'gateway-1', status: 'active', utilization: 45 },
-    { id: 'conn-3', source: 'edge-1', target: 'gateway-1', status: 'active', utilization: 30 },
-    { id: 'conn-4', source: 'datacenter-1', target: 'cdn-1', status: 'congested', utilization: 89 },
-    { id: 'conn-5', source: 'edge-1', target: 'client-1', status: 'active', utilization: 25 }
-  ],
-  dataFlows: [
-    { id: 'flow-1', source: 'datacenter-1', target: 'edge-1', priority: 'high', progress: 75 },
-    { id: 'flow-2', source: 'datacenter-1', target: 'cdn-1', priority: 'critical', progress: 45 }
-  ]
-});
 
 // ✅ REAL 3D: Node Component with actual Three.js meshes
 function Node3D({ node, isSelected, onSelect }: { 
@@ -444,7 +338,7 @@ function NetworkScene({
   );
 }
 
-// Status style functions (same as before)
+// Status style functions
 const getStatusStyleClass = (status: NodeStatus): string => {
   const statusMap: Record<NodeStatus, string> = {
     'online': 'status-online',
@@ -463,38 +357,72 @@ const getEncryptionStyleClass = (encryptionStatus: EncryptionStatus): string => 
   return encryptionStatus === 'quantum-resistant' ? 'status-info' : 'bg-gray-100 text-gray-700';
 };
 
-// ✅ MAIN COMPONENT: Guaranteed 3D rendering
+// ✅ MAIN COMPONENT: Real backend integration
 export default function NetworkTopology3D() {
   const [networkData, setNetworkData] = useState<any>(null);
   const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
   const [networkStats, setNetworkStats] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
+  const networkService = NetworkTopologyService.getInstance();
+
+  // ✅ REAL BACKEND: Load live data from your DataVault cluster
   useEffect(() => {
-    const loadData = () => {
-      const data = createMockNetworkData();
-      setNetworkData(data);
-      setNetworkStats({
-        activeNodes: data.nodes.length,
-        totalNodes: data.nodes.length,
-        totalThroughput: data.nodes.reduce((sum, node) => sum + node.metrics.throughput, 0).toFixed(1),
-        averageLatency: (data.nodes.reduce((sum, node) => sum + node.metrics.latency, 0) / data.nodes.length).toFixed(1),
-        globalUptime: (data.nodes.reduce((sum, node) => sum + node.metrics.uptime, 0) / data.nodes.length).toFixed(2)
-      });
-      setIsLoading(false);
+    const loadRealData = async () => {
+      try {
+        setIsLoading(true);
+        setError(null);
+        
+        // ✅ Fetch live data from your 3-node cluster
+        const [topology, stats] = await Promise.all([
+          networkService.getNetworkTopology(),
+          networkService.getNetworkStats()
+        ]);
+        
+        setNetworkData(topology);
+        setNetworkStats(stats);
+        
+      } catch (err) {
+        console.error('Failed to load network data:', err);
+        setError('Failed to connect to DataVault cluster');
+      } finally {
+        setIsLoading(false);
+      }
     };
 
-    loadData();
-    const interval = setInterval(loadData, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    loadRealData();
+
+    // ✅ REAL-TIME: Auto-refresh every 10 seconds
+    networkService.startRealTimeUpdates(loadRealData);
+
+    return () => {
+      networkService.stopUpdates();
+    };
+  }, [networkService]);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="apple-body text-gray-600">Loading 3D Network Topology...</p>
+          <p className="apple-body text-gray-600">Loading Live DataVault Network...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <p className="apple-body text-red-600">{error}</p>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="apple-button mt-4"
+          >
+            Retry Connection
+          </button>
         </div>
       </div>
     );
@@ -504,7 +432,7 @@ export default function NetworkTopology3D() {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
-          <p className="apple-body text-gray-600">Failed to load network data</p>
+          <p className="apple-body text-gray-600">No network data available</p>
         </div>
       </div>
     );
@@ -512,7 +440,7 @@ export default function NetworkTopology3D() {
 
   return (
     <div className="space-y-8">
-      {/* Network Statistics */}
+      {/* ✅ REAL METRICS: Live statistics from your cluster */}
       <motion.div 
         className="enterprise-grid"
         initial={{ opacity: 0, y: 20 }}
@@ -560,7 +488,7 @@ export default function NetworkTopology3D() {
         ))}
       </motion.div>
 
-      {/* ✅ GUARANTEED 3D: Real Three.js Canvas */}
+      {/* ✅ REAL 3D: Live DataVault network visualization */}
       <motion.div 
         className="apple-card overflow-hidden"
         initial={{ opacity: 0, y: 20 }}
@@ -570,19 +498,18 @@ export default function NetworkTopology3D() {
         <div className="p-6 border-b border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="apple-title-3">Real 3D Network Topology</h3>
+              <h3 className="apple-title-3">Live DataVault Network</h3>
               <p className="apple-subheadline">
-                Interactive 3D visualization with WebGL rendering
+                Real-time 3D visualization of your distributed cluster
               </p>
             </div>
             <div className="status-online px-3 py-1 rounded-full text-xs font-medium">
-              3D WebGL Active
+              Live BFT Data
             </div>
           </div>
         </div>
         
         <div className="h-96 relative">
-          {/* ✅ REAL 3D: Direct Canvas usage with no fallbacks */}
           <Canvas 
             camera={{ position: [15, 15, 15], fov: 60 }}
             style={{ 
@@ -600,11 +527,11 @@ export default function NetworkTopology3D() {
           
           <div className="absolute top-4 left-4 text-white text-sm bg-black/60 backdrop-blur-sm p-4 rounded-xl border border-white/20">
             <div className="apple-footnote space-y-2">
-              <div className="font-semibold text-green-300">🎮 3D Controls:</div>
-              <div>🖱️ Drag to rotate camera</div>
-              <div>🔍 Scroll to zoom in/out</div>
-              <div>👆 Click nodes for details</div>
-              <div className="text-blue-300">📊 Real-time 3D monitoring</div>
+              <div className="font-semibold text-green-300">🎮 Live DataVault:</div>
+              <div>🌐 3-Node BFT Cluster</div>
+              <div>🔒 Quantum Encryption</div>
+              <div>📊 Real-time Metrics</div>
+              <div className="text-blue-300">🚀 Database-Free P2P</div>
             </div>
           </div>
         </div>

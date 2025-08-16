@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+type AuditEntry struct {
+	ID        string    `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	EventType string    `json:"event_type"`
+	UserID    string    `json:"user_id"`
+	Action    string    `json:"action"`
+	Result    string    `json:"result"`
+}
+
 type AuditEventType string
 
 const (
@@ -43,6 +52,29 @@ func NewAuditLogger(logFile string) *AuditLogger {
 		logFile: logFile,
 		events:  make([]AuditEvent, 0),
 	}
+}
+func (al *AuditLogger) GetRecentEntries(limit int) []AuditEntry {
+	al.mutex.Lock()
+	defer al.mutex.Unlock()
+
+	var entries []AuditEntry
+	for _, event := range al.events {
+		entries = append(entries, AuditEntry{
+			ID:        event.ID,
+			Timestamp: event.Timestamp,
+			EventType: string(event.EventType),
+			UserID:    event.UserID,
+			Action:    event.Action,
+			Result:    event.Result,
+		})
+	}
+
+	// Apply limit
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
+
+	return entries
 }
 
 func (al *AuditLogger) LogEvent(eventType AuditEventType, userID, resourceID, action, result string, details map[string]interface{}) error {

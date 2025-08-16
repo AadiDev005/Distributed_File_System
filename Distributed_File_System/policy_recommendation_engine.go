@@ -248,6 +248,20 @@ type PolicyEngineConfig struct {
 	MaxRecommendations  int           `json:"max_recommendations"`
 }
 
+func (ape *AIPoweredPolicyRecommendationEngine) GetActivePolicies() []string {
+	ape.mutex.RLock()
+	defer ape.mutex.RUnlock()
+
+	var activePolicies []string
+	for _, template := range ape.policyLibrary {
+		if template.IsActive {
+			activePolicies = append(activePolicies, template.Name)
+		}
+	}
+
+	return activePolicies
+}
+
 // Constructor - FIXED
 func NewAIPoweredPolicyRecommendationEngine(nodeID string, server *EnterpriseFileServer) *AIPoweredPolicyRecommendationEngine {
 	return &AIPoweredPolicyRecommendationEngine{
