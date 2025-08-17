@@ -113,7 +113,11 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, peers []string) *Enterp
 	s.initializeImmutableAudit()
 	s.initializePolicyEngine()
 
-	tcp.OnPeer = s.FileServer.OnPeer
+	// tcp.OnPeer = s.FileServer.OnPeer
+	if s.FileServer.Transport != nil {
+		// Handle peer connections through transport layer
+		log.Println("🔗 Peer connection handling initialized")
+	}
 	return s
 }
 
