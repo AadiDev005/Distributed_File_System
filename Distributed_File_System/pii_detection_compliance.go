@@ -60,6 +60,7 @@ type PIIDetectionResult struct {
 	ScanTime         time.Time     `json:"scan_time"`
 	ProcessingTime   time.Duration `json:"processing_time"`
 	ModelVersion     string        `json:"model_version"`
+	DetectedTypes    []string      `json:"detected_types"`
 	DataSize         int           `json:"data_size_bytes"`
 	IsReviewed       bool          `json:"is_reviewed"`
 	ReviewedBy       string        `json:"reviewed_by,omitempty"`

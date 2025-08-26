@@ -3,7 +3,8 @@
   status build test stop restart logs check-deps quick-start full-clean \
   health-check api-safe dev-safe force-kill-ports nuclear-clean \
   diagnose-ports dashboard-api main-server fix-airplay clean-storage \
-  dev-clean test-files test-upload test-delete test-view test-share
+  dev-clean test-files test-upload test-delete test-view test-share \
+  install-cors deps
 
 # 🏆 DataVault Enterprise - Development Commands
 # ==============================================
@@ -11,10 +12,28 @@
 help: ## Show this help message
 	@echo "🏆 DataVault Enterprise - Development Commands"
 	@echo "=============================================="
-	@echo "Phase 2.0: Enhanced File Operations & Smooth UX"
+	@echo "Phase 2.0: Enhanced File Operations & Smooth UX with CORS Fix"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 	awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+#───────────────────────────────
+# Dependencies & Installation
+#───────────────────────────────
+
+install-cors: ## Install CORS dependency for Go backend
+	@echo "🔧 Installing CORS dependency..."
+	@go get github.com/rs/cors
+	@go mod tidy
+	@echo "✅ CORS dependency installed"
+
+deps: install-cors ## Install all dependencies (Go + Node.js)
+	@echo "📦 Installing all DataVault dependencies..."
+	@$(MAKE) install-cors
+	@cd datavault-dashboard && npm install
+	@echo "✅ All dependencies installed"
+
+install: deps ## Install frontend dependencies (includes CORS)
 
 #───────────────────────────────
 # Servers
@@ -24,9 +43,9 @@ dashboard-api: ## Start Dashboard API Server (port 3000)
 	@echo "🚀 Starting DataVault Dashboard API Server..."
 	@cd datavault-dashboard/api/dashboard && go run server.go
 
-main-server: ## Start Main DataVault Enterprise Server (ports 8080-8082)
-	@echo "🏗️  Starting DataVault Enterprise Main Server..."
-	@echo "📋 Loading all enterprise modules..."
+main-server: ## Start Main DataVault Enterprise Server (ports 8080-8082) with CORS
+	@echo "🏗️  Starting DataVault Enterprise Main Server with CORS..."
+	@echo "📋 Loading all enterprise modules with CORS middleware..."
 	@go run \
 		main.go server.go auth.go collaboration_fix.go operational_transform_engine.go \
 		workflow_management_engine.go policy_recommendation_engine.go \
@@ -51,10 +70,11 @@ enterprise: main-server ## Alias
 
 dev: ## Start Dashboard API + Main Server + Frontend (recommended)
 	@echo "🚀 Starting Complete DataVault Enterprise Development Environment..."
-	@echo "🔧 Phase 2.0: Enhanced file operations with smooth transitions"
+	@echo "🔧 Phase 2.0: Enhanced file operations with CORS fix"
+	@$(MAKE) check-deps
 	@$(MAKE) kill-ports-enhanced
 	@$(MAKE) clean-storage
-	@echo "🔄 Starting services in sequence..."
+	@echo "🔄 Starting services in sequence with CORS..."
 	@$(MAKE) dashboard-api & \
 	echo "⏳ Waiting for API server..." && sleep 5 && \
 	$(MAKE) main-server & \
@@ -62,7 +82,7 @@ dev: ## Start Dashboard API + Main Server + Frontend (recommended)
 	echo "🎯 Starting dashboard..." && $(MAKE) dashboard
 
 dev-safe: ## Start development environment (safe API mode)
-	@echo "🛡️  Starting DataVault in Safe Mode..."
+	@echo "🛡️  Starting DataVault in Safe Mode with CORS..."
 	@$(MAKE) kill-ports-enhanced
 	@$(MAKE) clean-storage
 	@$(MAKE) api-safe & \
@@ -70,8 +90,8 @@ dev-safe: ## Start development environment (safe API mode)
 	sleep 8 && $(MAKE) dashboard
 
 quick-start: ## Fast start: check-deps + clean + dev
-	@echo "⚡ DataVault Quick Start..."
-	@$(MAKE) check-deps
+	@echo "⚡ DataVault Quick Start with CORS..."
+	@$(MAKE) deps
 	@$(MAKE) clean-storage
 	@$(MAKE) dev
 
@@ -107,7 +127,7 @@ full-clean: ## Full cleanup (includes node_modules & storage)
 	@$(MAKE) stop
 	@$(MAKE) clean
 	@cd datavault-dashboard && rm -rf node_modules package-lock.json
-	@rm -rf ./storage
+	@rm -rf ./storage go.sum
 	@echo "✅ Full cleanup complete! Run 'make install' afterwards."
 
 #───────────────────────────────
@@ -150,7 +170,7 @@ fix-airplay: ## Attempt to free macOS AirPlay port 5000
 #───────────────────────────────
 
 test-files: ## Test complete file operations workflow
-	@echo "🧪 Testing DataVault file operations..."
+	@echo "🧪 Testing DataVault file operations with CORS..."
 	@echo "📋 Testing: upload → list → view → share → delete"
 	@sleep 2
 	@$(MAKE) test-upload
@@ -165,7 +185,7 @@ test-files: ## Test complete file operations workflow
 
 test-upload: ## Test file upload functionality
 	@echo "📤 Testing file upload..."
-	@echo "Test file content for DataVault Enterprise" > test_upload.txt
+	@echo "Test file content for DataVault Enterprise with CORS" > test_upload.txt
 	@curl -X POST \
 		-F "files=@test_upload.txt" \
 		http://localhost:8080/api/files/upload \
@@ -199,11 +219,6 @@ test-delete: ## Test file deletion
 # Installation & dependencies
 #───────────────────────────────
 
-install: ## Install frontend dependencies
-	@echo "📦 Installing DataVault dependencies..."
-	@cd datavault-dashboard && npm install
-	@echo "✅ Dependencies installed"
-
 check-deps: ## Verify toolchain & create directories
 	@echo "🔍 Checking DataVault dependencies..."
 	@command -v go >/dev/null 2>&1 || { echo "❌ Go not installed"; exit 1; }
@@ -211,24 +226,26 @@ check-deps: ## Verify toolchain & create directories
 	@command -v npm >/dev/null 2>&1 || { echo "❌ npm not installed"; exit 1; }
 	@mkdir -p ./storage/shared ./logs ./tmp
 	@echo "✅ Dependencies verified, directories created"
+	@$(MAKE) install-cors
 
 #───────────────────────────────
 # Build & test commands
 #───────────────────────────────
 
-build: ## Build all components
-	@echo "🏗️  Building DataVault Enterprise..."
+build: ## Build all components with CORS
+	@echo "🏗️  Building DataVault Enterprise with CORS..."
+	@$(MAKE) install-cors
 	@go build -o datavault-server main.go server.go auth.go
 	@cd datavault-dashboard && npm run build
 	@cd datavault-dashboard/api/dashboard && go build -o dashboard-server server.go
-	@echo "✅ Build complete"
+	@echo "✅ Build complete with CORS support"
 
 test: ## Run Go tests
 	@echo "🧪 Running DataVault tests..."
 	@go test ./...
 
 collab-test: ## Quick collaboration & file operations test
-	@echo "🤝 Testing collaboration features..."
+	@echo "🤝 Testing collaboration features with CORS..."
 	@curl -X GET http://localhost:3000/health 2>/dev/null | jq '.' || echo "❌ API health check failed"
 	@curl -X GET http://localhost:8080/api/health 2>/dev/null | jq '.' || echo "❌ Main server health check failed"
 	@echo "✅ Collaboration test complete"
@@ -238,8 +255,8 @@ collab-test: ## Quick collaboration & file operations test
 #───────────────────────────────
 
 status: ## Show DataVault process status
-	@echo "📊 DataVault Enterprise Status"
-	@echo "=============================="
+	@echo "📊 DataVault Enterprise Status (with CORS)"
+	@echo "=========================================="
 	@ps aux | grep -E "(go run.*main|npm run dev|dashboard)" | grep -v grep || echo "No processes running"
 	@echo ""
 	@echo "Port Status:"
@@ -251,7 +268,7 @@ stop: ## Kill all DataVault processes
 	@echo "✅ All processes stopped"
 
 restart: ## Stop and restart development environment
-	@echo "🔄 Restarting DataVault Enterprise..."
+	@echo "🔄 Restarting DataVault Enterprise with CORS..."
 	@$(MAKE) stop
 	@sleep 2
 	@$(MAKE) dev
@@ -266,8 +283,8 @@ logs: ## Show running DataVault processes
 #───────────────────────────────
 
 health-check: ## Comprehensive health check
-	@echo "🏥 DataVault Enterprise Health Check"
-	@echo "===================================="
+	@echo "🏥 DataVault Enterprise Health Check (CORS-enabled)"
+	@echo "================================================="
 	@echo "API Server (port 3000):"
 	@curl -s http://localhost:3000/health | jq '.' 2>/dev/null || echo "  ❌ Not responding"
 	@echo "Main Server (port 8080):"
@@ -276,6 +293,8 @@ health-check: ## Comprehensive health check
 	@curl -s -I http://localhost:3001 2>/dev/null | head -1 || echo "  ❌ Not responding"
 	@echo "Storage:"
 	@ls -la ./storage/shared/ 2>/dev/null | tail -3 || echo "  ❌ Storage not accessible"
+	@echo "CORS Test:"
+	@curl -s -H "Origin: http://localhost:3001" http://localhost:8080/api/health | head -1 || echo "  ❌ CORS test failed"
 
 #───────────────────────────────
 # Advanced utilities
@@ -300,16 +319,25 @@ nuclear-clean: ## Nuclear option: kill everything and wipe all data
 #───────────────────────────────
 
 demo: ## Start with demo files pre-loaded
-	@echo "🎬 Starting DataVault with demo content..."
+	@echo "🎬 Starting DataVault with demo content and CORS..."
 	@$(MAKE) clean-storage
 	@$(MAKE) dev
 
 prod-test: ## Test production-like environment
-	@echo "🏭 Testing production-like environment..."
+	@echo "🏭 Testing production-like environment with CORS..."
 	@$(MAKE) build
 	@$(MAKE) clean-storage
 	@./datavault-server &
 	@cd datavault-dashboard && npm start &
 	@echo "✅ Production test environment started"
+
+# CORS-specific commands
+cors-fix: ## Apply CORS fix to project
+	@echo "🔧 Applying CORS fix..."
+	@$(MAKE) install-cors
+	@echo "✅ CORS dependencies installed"
+	@echo "📝 Next steps:"
+	@echo "   1. Update your main.go with CORS middleware"
+	@echo "   2. Run 'make clean && make build && make dev'"
 
 .DEFAULT_GOAL := help

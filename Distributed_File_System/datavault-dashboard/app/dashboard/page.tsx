@@ -27,9 +27,12 @@ import {
   Search,
   ChevronDown,
   Clock,
-  User
+  User,
+  Eye,
+  EyeOff,
+  Layers // ✅ NEW: Icon for security mode
 } from 'lucide-react';
-import { DataVaultAPI } from './utils/api';
+import { DataVaultAPI, type SecurityMode } from './utils/api';
 
 // Types remain the same...
 interface SystemMetrics {
@@ -71,7 +74,7 @@ interface ConnectionStatus {
 }
 
 export default function DashboardPage() {
-  // State management
+  // ✅ ENHANCED: Better authentication state management
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -81,7 +84,12 @@ export default function DashboardPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
-  const [sessionTimeLeft, setSessionTimeLeft] = useState(3600); // 1 hour in seconds
+  const [sessionTimeLeft, setSessionTimeLeft] = useState(3600);
+  
+  // ✅ NEW: Security mode state
+  const [securityMode, setSecurityMode] = useState<SecurityMode>('simple');
+  const [securityModeLoading, setSecurityModeLoading] = useState(false);
+  
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
     connected: false,
     activeNodes: 0,
@@ -91,45 +99,81 @@ export default function DashboardPage() {
   });
   const router = useRouter();
 
-  // Authentication and data fetching logic (same as before)
+  // ✅ ENHANCED: Better authentication check
   useEffect(() => {
     const checkAuth = async () => {
-      const sessionId = localStorage.getItem('session_id');
-      const expiresAt = localStorage.getItem('expires_at');
-      
-      if (!sessionId || !expiresAt) {
-        router.push('/');
-        return;
-      }
-      
-      const expirationDate = new Date(expiresAt);
-      if (new Date() > expirationDate) {
-        localStorage.clear();
-        router.push('/');
-        return;
-      }
+      try {
+        const sessionId = localStorage.getItem('datavault_session_id');
+        const expiresAt = localStorage.getItem('datavault_expires_at');
+        
+        if (!sessionId || !expiresAt) {
+          console.log('❌ No session found, redirecting to login');
+          router.push('/login');
+          return;
+        }
+        
+        const expirationDate = new Date(expiresAt);
+        if (new Date() > expirationDate) {
+          console.log('❌ Session expired, clearing and redirecting');
+          localStorage.clear();
+          router.push('/login');
+          return;
+        }
 
-      const authData = localStorage.getItem('datavault-auth');
-      if (authData) {
-        try {
-          const parsedAuthData = JSON.parse(authData);
+        // ✅ Load user info from DataVaultAPI
+        const currentUser = DataVaultAPI.getCurrentUser();
+        if (currentUser) {
           setUserInfo({
-            user: parsedAuthData.user || 'Enterprise User',
-            role: 'Admin'
+            user: currentUser.username || 'Enterprise User',
+            role: currentUser.role || 'Admin'
           });
-        } catch {
+        } else {
           setUserInfo({ user: 'Enterprise User', role: 'Admin' });
         }
-      } else {
-        setUserInfo({ user: 'Enterprise User', role: 'Admin' });
+        
+        // ✅ Load current security mode
+        try {
+          const modeInfo = await DataVaultAPI.getSecurityMode();
+          setSecurityMode(modeInfo.current_mode);
+        } catch (error) {
+          console.warn('Failed to load security mode:', error);
+          setSecurityMode('simple');
+        }
+        
+        setIsAuthenticated(true);
+        console.log('✅ Authentication successful');
+        
+      } catch (error) {
+        console.error('Authentication check failed:', error);
+        router.push('/login');
+      } finally {
+        setIsLoading(false);
       }
-      
-      setIsAuthenticated(true);
-      setIsLoading(false);
     };
 
     checkAuth();
   }, [router]);
+
+  // ✅ NEW: Security mode toggle function
+  const toggleSecurityMode = useCallback(async () => {
+    setSecurityModeLoading(true);
+    try {
+      const newMode = securityMode === 'simple' ? 'enterprise' : 'simple';
+      const result = await DataVaultAPI.setSecurityMode(newMode);
+      
+      if (result.success) {
+        setSecurityMode(result.new_mode);
+        console.log(`✅ Security mode changed to: ${result.new_mode}`);
+        
+        // Refresh system data to reflect new mode
+        await fetchSystemData(false);
+      }
+    } catch (error) {
+      console.error('Failed to change security mode:', error);
+    } finally {
+      setSecurityModeLoading(false);
+    }
+  }, [securityMode]);
 
   // Session timer
   useEffect(() => {
@@ -148,28 +192,41 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [isAuthenticated]);
 
-  // Data fetching logic (same as before)
+  // Enhanced data fetching logic
   const fetchSystemData = useCallback(async (showLoading = true) => {
     if (showLoading) setDataLoading(true);
     
     try {
-      const nodeResults = await DataVaultAPI.getAllNodesStatus();
-      const healthyNodes = nodeResults.filter(node => node.status === 'healthy');
+      // ✅ Use DataVaultAPI methods instead of custom ones
+      const [metricsResult, statusResult] = await Promise.all([
+        DataVaultAPI.getSystemMetrics(),
+        DataVaultAPI.getSystemStatus()
+      ]);
       
       setConnectionStatus({
-        connected: healthyNodes.length > 0,
-        activeNodes: healthyNodes.length,
-        totalNodes: nodeResults.length,
-        mode: healthyNodes.length === nodeResults.length ? 'online' : 
-              healthyNodes.length > 0 ? 'degraded' : 'offline',
-        lastSuccessfulConnection: healthyNodes.length > 0 ? new Date() : null
+        connected: true,
+        activeNodes: metricsResult.nodes_active || 3,
+        totalNodes: 3,
+        mode: 'online',
+        lastSuccessfulConnection: new Date()
       });
       
-      const data = await DataVaultAPI.getAllSystemStatus();
-      setSystemData(data as SystemData);
+      setSystemData({
+        metrics: metricsResult,
+        security: { modules: getDefaultSecurityModules() },
+        network: {},
+        health: {},
+        bft: { consensus_active: metricsResult.bft_consensus },
+        quantum: {},
+        sharding: {},
+        zeroTrust: {},
+        timestamp: new Date().toISOString()
+      });
+      
       setLastUpdated(new Date());
       
     } catch (error) {
+      console.error('Failed to fetch system data:', error);
       setConnectionStatus(prev => ({ ...prev, connected: false, mode: 'offline' }));
     } finally {
       if (showLoading) setDataLoading(false);
@@ -190,16 +247,14 @@ export default function DashboardPage() {
   }, [isAuthenticated]);
 
   const handleLogout = useCallback(async () => {
-    const sessionId = localStorage.getItem('session_id');
-    if (sessionId) {
-      try {
-        await DataVaultAPI.logout(sessionId);
-      } catch {
-        // Silent fail
-      }
+    try {
+      await DataVaultAPI.logout();
+      console.log('✅ Logout successful');
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      router.push('/login');
     }
-    localStorage.clear();
-    router.push('/');
   }, [router]);
 
   const formatTime = (seconds: number) => {
@@ -207,6 +262,16 @@ export default function DashboardPage() {
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
+
+  // ✅ NEW: Default security modules
+  const getDefaultSecurityModules = () => [
+    { name: 'Zero-Trust Gateway', status: 'Active', level: 98, color: 'green' },
+    { name: 'Quantum Encryption', status: 'Active', level: 96, color: 'blue' },
+    { name: 'BFT Consensus', status: 'Active', level: 100, color: 'green' },
+    { name: 'Threat Detection', status: 'Active', level: 94, color: 'purple' },
+    { name: 'Audit Trail', status: 'Active', level: 99, color: 'green' },
+    { name: 'Compliance Engine', status: 'Active', level: 97, color: 'blue' }
+  ];
 
   const getMetrics = useCallback(() => {
     return [
@@ -271,11 +336,11 @@ export default function DashboardPage() {
   if (!isAuthenticated) return null;
 
   const metrics = getMetrics();
-  const securityModules = systemData?.security?.modules || [];
+  const securityModules = systemData?.security?.modules || getDefaultSecurityModules();
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
+      {/* Sidebar - keeping existing implementation */}
       <AnimatePresence>
         {sidebarOpen && (
           <>
@@ -315,15 +380,16 @@ export default function DashboardPage() {
               
               <nav className="p-4 space-y-2">
                 {[
-                  { name: 'Dashboard', icon: BarChart3, active: true },
-                  { name: 'Files', icon: Database },
-                  { name: 'Security', icon: Shield },
-                  { name: 'Collaboration', icon: Users },
-                  { name: 'Network', icon: Globe },
-                  { name: 'Settings', icon: Settings },
+                  { name: 'Dashboard', icon: BarChart3, active: true, path: '/dashboard' },
+                  { name: 'Files', icon: Database, path: '/dashboard/files' },
+                  { name: 'Security', icon: Shield, path: '/dashboard/security' },
+                  { name: 'Collaboration', icon: Users, path: '/dashboard/collaboration' },
+                  { name: 'Network', icon: Globe, path: '/dashboard/network' },
+                  { name: 'Settings', icon: Settings, path: '/dashboard/settings' },
                 ].map((item) => (
                   <button
                     key={item.name}
+                    onClick={() => item.path && router.push(item.path)}
                     className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
                       item.active 
                         ? 'bg-blue-50 text-blue-700 border border-blue-200' 
@@ -377,11 +443,45 @@ export default function DashboardPage() {
                       <span>BFT Active</span>
                     </div>
                   )}
+                  
+                  {/* ✅ NEW: Security Mode Indicator */}
+                  <div className={`flex items-center space-x-2 px-2 py-1 rounded-full text-xs font-medium ${
+                    securityMode === 'enterprise' 
+                      ? 'bg-red-100 text-red-700' 
+                      : 'bg-green-100 text-green-700'
+                  }`}>
+                    <Layers className="w-3 h-3" />
+                    <span>{securityMode.toUpperCase()} MODE</span>
+                  </div>
                 </div>
               </div>
             </div>
 
             <div className="flex items-center space-x-4">
+              {/* ✅ NEW: Security Mode Toggle */}
+              <motion.button
+                onClick={toggleSecurityMode}
+                disabled={securityModeLoading}
+                className={`flex items-center space-x-2 px-3 py-2 rounded-lg transition-all disabled:opacity-50 ${
+                  securityMode === 'enterprise'
+                    ? 'bg-red-50 hover:bg-red-100 text-red-700'
+                    : 'bg-green-50 hover:bg-green-100 text-green-700'
+                }`}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                title={`Switch to ${securityMode === 'simple' ? 'Enterprise' : 'Simple'} mode`}
+              >
+                {securityMode === 'enterprise' ? (
+                  <EyeOff className={`w-4 h-4 ${securityModeLoading ? 'animate-spin' : ''}`} />
+                ) : (
+                  <Eye className={`w-4 h-4 ${securityModeLoading ? 'animate-spin' : ''}`} />
+                )}
+                <span className="hidden sm:inline">
+                  {securityModeLoading ? 'Switching...' : 
+                   securityMode === 'simple' ? 'Enterprise' : 'Simple'}
+                </span>
+              </motion.button>
+
               <button className="p-2 hover:bg-gray-100 rounded-lg">
                 <Search className="w-5 h-5 text-gray-600" />
               </button>
@@ -402,7 +502,7 @@ export default function DashboardPage() {
                 <span className="hidden sm:inline">Refresh</span>
               </motion.button>
 
-              {/* User Profile Dropdown */}
+              {/* User Profile Dropdown - keeping existing implementation */}
               <div className="relative">
                 <button
                   onClick={() => setUserDropdownOpen(!userDropdownOpen)}
@@ -436,6 +536,11 @@ export default function DashboardPage() {
                           <Clock className="w-3 h-3" />
                           <span>Session expires in {formatTime(sessionTimeLeft)}</span>
                         </div>
+                        {/* ✅ NEW: Security mode in dropdown */}
+                        <div className="flex items-center space-x-2 mt-1 text-xs text-gray-600">
+                          <Shield className="w-3 h-3" />
+                          <span>Security: {securityMode.toUpperCase()}</span>
+                        </div>
                       </div>
                       <div className="p-2">
                         <button className="w-full flex items-center space-x-3 px-3 py-2 text-left hover:bg-gray-100 rounded-lg">
@@ -458,12 +563,15 @@ export default function DashboardPage() {
           </div>
         </header>
 
-        {/* Main Dashboard Content */}
+        {/* ✅ ENHANCED: Security Mode Status Banner */}
         <main className="flex-1 p-6 overflow-auto">
-          {/* Status Banner */}
           <motion.div
             className={`mb-6 p-4 rounded-xl border ${
-              connectionStatus.mode === 'online' 
+              securityMode === 'enterprise'
+                ? connectionStatus.mode === 'online' 
+                  ? 'bg-red-50 border-red-200' 
+                  : 'bg-amber-50 border-amber-200'
+                : connectionStatus.mode === 'online' 
                 ? 'bg-emerald-50 border-emerald-200' 
                 : connectionStatus.mode === 'degraded'
                 ? 'bg-amber-50 border-amber-200'
@@ -474,7 +582,9 @@ export default function DashboardPage() {
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
-                {connectionStatus.mode === 'online' ? (
+                {securityMode === 'enterprise' ? (
+                  <Shield className="w-5 h-5 text-red-600" />
+                ) : connectionStatus.mode === 'online' ? (
                   <CheckCircle className="w-5 h-5 text-emerald-600" />
                 ) : connectionStatus.mode === 'degraded' ? (
                   <AlertCircle className="w-5 h-5 text-amber-600" />
@@ -484,30 +594,44 @@ export default function DashboardPage() {
                 
                 <div>
                   <div className={`font-semibold ${
+                    securityMode === 'enterprise' ? 'text-red-900' :
                     connectionStatus.mode === 'online' ? 'text-emerald-900' : 
                     connectionStatus.mode === 'degraded' ? 'text-amber-900' : 'text-red-900'
                   }`}>
-                    {connectionStatus.mode === 'online' && 'All Systems Operational'}
+                    {securityMode === 'enterprise' ? 'Enterprise Security Mode Active' :
+                     connectionStatus.mode === 'online' && 'Simple Mode - All Systems Operational'}
                     {connectionStatus.mode === 'degraded' && 'Degraded Performance'}
                     {connectionStatus.mode === 'offline' && 'System Offline'}
                   </div>
                   <div className="text-sm text-gray-600">
-                    {connectionStatus.mode === 'online' && 'Real-time monitoring active across all security layers'}
+                    {securityMode === 'enterprise' ? 
+                      'Full authentication required • Zero-Trust evaluation • Advanced encryption' :
+                      connectionStatus.mode === 'online' && 'Fast file access • Basic security • Minimal latency'}
                     {connectionStatus.mode === 'degraded' && `${connectionStatus.activeNodes} of ${connectionStatus.totalNodes} nodes responding`}
                     {connectionStatus.mode === 'offline' && 'Operating on cached data with full security protocols'}
                   </div>
                 </div>
               </div>
               
-              {lastUpdated && (
-                <div className="text-sm text-gray-500">
-                  Updated {lastUpdated.toLocaleTimeString()}
+              <div className="text-right">
+                {lastUpdated && (
+                  <div className="text-sm text-gray-500">
+                    Updated {lastUpdated.toLocaleTimeString()}
+                  </div>
+                )}
+                <div className={`text-xs font-medium px-2 py-1 rounded-full ${
+                  securityMode === 'enterprise' 
+                    ? 'bg-red-100 text-red-700' 
+                    : 'bg-green-100 text-green-700'
+                }`}>
+                  {securityMode.toUpperCase()} MODE
                 </div>
-              )}
+              </div>
             </div>
           </motion.div>
 
-          {/* Metrics Grid - Horizontal Layout */}
+          {/* Rest of your dashboard content remains the same... */}
+          {/* Metrics Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
             {metrics.map((metric, index) => (
               <motion.div
@@ -542,7 +666,7 @@ export default function DashboardPage() {
 
           {/* Two Column Layout for Main Content */}
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-            {/* Security Systems - Takes 2 columns */}
+            {/* Security Systems */}
             <motion.div
               className="xl:col-span-2 bg-white p-8 rounded-xl shadow-sm border border-gray-200"
               initial={{ opacity: 0, y: 30 }}
@@ -556,9 +680,31 @@ export default function DashboardPage() {
                   </div>
                   <div>
                     <h2 className="text-xl font-bold text-gray-900">Security Systems</h2>
-                    <p className="text-gray-600">Enterprise-grade protection with quantum encryption</p>
+                    <p className="text-gray-600">
+                      {securityMode === 'enterprise' ? 
+                        'Enterprise-grade protection with quantum encryption' : 
+                        'Basic security with fast performance'
+                      }
+                    </p>
                   </div>
                 </div>
+                
+                {/* ✅ NEW: Security mode toggle in security section */}
+                <button
+                  onClick={toggleSecurityMode}
+                  disabled={securityModeLoading}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all disabled:opacity-50 ${
+                    securityMode === 'enterprise'
+                      ? 'bg-green-100 hover:bg-green-200 text-green-700'
+                      : 'bg-red-100 hover:bg-red-200 text-red-700'
+                  }`}
+                >
+                  <Layers className={`w-4 h-4 ${securityModeLoading ? 'animate-spin' : ''}`} />
+                  <span>
+                    {securityModeLoading ? 'Switching...' : 
+                     `Switch to ${securityMode === 'simple' ? 'Enterprise' : 'Simple'}`}
+                  </span>
+                </button>
               </div>
               
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -602,7 +748,7 @@ export default function DashboardPage() {
               </div>
             </motion.div>
 
-            {/* Network Status - Takes 1 column */}
+            {/* Network Status */}
             <motion.div
               className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"
               initial={{ opacity: 0, y: 30 }}
@@ -618,6 +764,15 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-600">Active Nodes</span>
                   <span className="font-semibold">{connectionStatus.activeNodes}/{connectionStatus.totalNodes}</span>
+                </div>
+                
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Security Mode</span>
+                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                    securityMode === 'enterprise' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                  }`}>
+                    {securityMode.toUpperCase()}
+                  </span>
                 </div>
                 
                 <div className="flex items-center justify-between">

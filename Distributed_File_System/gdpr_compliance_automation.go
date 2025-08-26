@@ -1077,3 +1077,29 @@ func (g *GDPRComplianceEngine) GetDataRights() []string {
 		"Right to Restrict Processing",
 	}
 }
+func (gdpr *GDPRComplianceEngine) AddDataInventoryEntry(userID, fileID, fileName string) (*DataInventoryEntry, error) {
+	gdpr.mutex.Lock()
+	defer gdpr.mutex.Unlock()
+
+	entry := &DataInventoryEntry{
+		EntryID:           generateGDPRID(),
+		DataSubjectID:     userID,
+		FileID:            fileID,
+		FileName:          fileName,
+		DataCategory:      "user_data",
+		PIITypes:          []string{"general"},
+		LegalBasis:        "consent",
+		ProcessingPurpose: "file_storage",
+		CreatedAt:         time.Now(),
+		DataSubjectRights: []string{"access", "rectification", "erasure", "portability"},
+		DataSensitivity:   "medium",
+		ProcessingStatus:  "active",
+		BackupLocations:   []string{"primary_storage"},
+		SharedWith:        []string{},
+	}
+
+	gdpr.dataInventory[entry.EntryID] = entry
+
+	fmt.Printf("[GDPR] Added data inventory entry: %s for file %s\n", entry.EntryID[:8], fileName)
+	return entry, nil
+}

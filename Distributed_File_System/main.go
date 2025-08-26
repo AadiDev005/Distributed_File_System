@@ -5,7 +5,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
-	"log" // NEW
+	"log"
+	"net/http" // ADD THIS
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,9 +15,10 @@ import (
 	"time"
 
 	"github.com/anthdm/foreverstore/p2p"
+	"github.com/rs/cors"
 )
 
-/* ── helpers ─────────────────────────────────────────────── */
+/* ── helpers ─────────────────────────────────────────── */
 
 func generateNodeID() string {
 	id := make([]byte, 16)
@@ -45,7 +47,33 @@ func detectMimeType(name string) string {
 	}
 }
 
-/* ── bootstrap ──────────────────────────────────────────── */
+// ✅ NEW: CORS configuration function
+func createCORSMiddleware() *cors.Cors {
+	return cors.New(cors.Options{
+		AllowedOrigins: []string{
+			"http://localhost:3000",
+			"http://localhost:3001",
+			"http://localhost:3002",
+			"http://localhost:3003",
+		},
+		AllowCredentials: true,
+		AllowedMethods: []string{
+			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD",
+		},
+		AllowedHeaders: []string{
+			"Accept", "Authorization", "Content-Type", "X-CSRF-Token",
+			"X-Session-ID", "X-Requested-With", "Accept-Encoding",
+			"Accept-Language", "Cache-Control",
+		},
+		ExposedHeaders: []string{
+			"Content-Length", "Content-Disposition", "Content-Type",
+		},
+		MaxAge: int(24 * time.Hour.Seconds()),
+		Debug:  true, // Set to false in production
+	})
+}
+
+/* ── bootstrap ──────────────────────────────────────── */
 
 func makeEnterpriseServer(listenAddr, webAPIPort string, peers []string) *EnterpriseFileServer {
 	/* transport */
@@ -93,11 +121,26 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, peers []string) *Enterp
 		AuditLogger:          audit,
 		EnableWebAPI:         true,
 		WebAPIPort:           webAPIPort,
-		PeerList:             peers,                     // NEW
-		SelfAddr:             "localhost:" + webAPIPort, // NEW
+		PeerList:             peers,
+		SelfAddr:             "localhost:" + webAPIPort,
 	})
 
-	log.Printf("✅ Node %s → storage %s", s.FileServer.ID, root)
+	// ✅ NEW: Apply CORS middleware to the server's HTTP handler
+	corsMiddleware := createCORSMiddleware()
+
+	// Wrap the existing mux with CORS
+	if s.mux != nil {
+		wrappedHandler := corsMiddleware.Handler(s.mux)
+		s.httpServer = &http.Server{
+			Addr:         ":" + webAPIPort,
+			Handler:      wrappedHandler, // ✅ CRITICAL: Use CORS-wrapped handler
+			ReadTimeout:  45 * time.Second,
+			WriteTimeout: 45 * time.Second,
+			IdleTimeout:  120 * time.Second,
+		}
+	}
+
+	log.Printf("✅ Node %s → storage %s (CORS enabled)", s.FileServer.ID, root)
 
 	/* enterprise extras */
 	nodeID := generateNodeID() + "-" + listenAddr
@@ -113,15 +156,13 @@ func makeEnterpriseServer(listenAddr, webAPIPort string, peers []string) *Enterp
 	s.initializeImmutableAudit()
 	s.initializePolicyEngine()
 
-	// tcp.OnPeer = s.FileServer.OnPeer
 	if s.FileServer.Transport != nil {
-		// Handle peer connections through transport layer
 		log.Println("🔗 Peer connection handling initialized")
 	}
 	return s
 }
 
-/* ── demo utilities ─────────────────────────────────────── */
+/* ── demo utilities ─────────────────────────────────── */
 
 func createDemoFiles(s *EnterpriseFileServer, sess string) {
 	if os.Getenv("DATAVAULT_NO_DEMO") == "true" {
@@ -137,7 +178,7 @@ func createDemoFiles(s *EnterpriseFileServer, sess string) {
 	}
 }
 
-/* ── main ───────────────────────────────────────────────── */
+/* ── main ───────────────────────────────────────────── */
 
 func main() {
 	fmt.Println("🚀 DataVault Enterprise – flat storage")
@@ -156,7 +197,7 @@ func main() {
 
 	for i, srv := range nodes {
 		go func(idx int, efs *EnterpriseFileServer) {
-			log.Printf("🚀 node %d: %s (API :%s)",
+			log.Printf("🚀 node %d: %s (API :%s) with CORS middleware",
 				idx+1, efs.FileServer.Transport.Addr(), efs.webAPIPort)
 			if err := efs.Start(); err != nil {
 				log.Fatalf("node %d died: %v", idx+1, err)
@@ -171,7 +212,7 @@ func main() {
 	sess, _ := n3.authManager.Login(user.Username, "demo")
 	createDemoFiles(n3, sess.ID)
 
-	fmt.Println("✅ all nodes ready – Ctrl-C to stop")
+	fmt.Println("✅ All nodes ready with CORS – Ctrl-C to stop")
 	<-sig
 	fmt.Println("🛑 shutting down")
 }
