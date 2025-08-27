@@ -47,7 +47,7 @@ text
 
 ## 📄 **Documentation**
 
-For complete architecture details, API endpoints, configuration options, and troubleshooting guide, see **[DataVault_Enterprise_Technical_Specification.pdf](./docs/DataVault_Enterprise_Technical_Specification.pdf)**
+For complete architecture details, API endpoints, configuration options, and troubleshooting guide, see **[DataVault_Enterprise_Technical_Specification.pdf](https://drive.google.com/file/d/1iKPUAmKMdrxnWGxARZlqNy-vtLsmGiWR/view?usp=drive_link)**
 
 ---
 
