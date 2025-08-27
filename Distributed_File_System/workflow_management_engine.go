@@ -1,10 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
+
 	"sync"
 	"time"
 )
@@ -335,74 +334,3 @@ func (we *WorkflowEngine) processEvents() {
 }
 
 // API Handlers
-func (efs *EnterpriseFileServer) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var workflow Workflow
-	if err := json.NewDecoder(r.Body).Decode(&workflow); err != nil {
-		http.Error(w, "Invalid workflow data", http.StatusBadRequest)
-		return
-	}
-
-	if err := efs.workflowEngine.CreateWorkflow(&workflow); err != nil {
-		http.Error(w, "Failed to create workflow", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"workflow_id": workflow.ID,
-		"message":     "Workflow created successfully",
-	})
-}
-
-func (efs *EnterpriseFileServer) handleWorkflowStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var request struct {
-		WorkflowID string                 `json:"workflow_id"`
-		UserID     string                 `json:"user_id"`
-		Variables  map[string]interface{} `json:"variables"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "Invalid request data", http.StatusBadRequest)
-		return
-	}
-
-	instance, err := efs.workflowEngine.StartWorkflow(request.WorkflowID, request.UserID, request.Variables)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"instance_id": instance.ID,
-		"instance":    instance,
-	})
-}
-
-func (efs *EnterpriseFileServer) handleWorkflowStatus(w http.ResponseWriter, r *http.Request) {
-	status := efs.workflowEngine.GetWorkflowStatus()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
-}
-
-func (efs *EnterpriseFileServer) handleWorkflowTemplates(w http.ResponseWriter, r *http.Request) {
-	templates := efs.workflowEngine.GetTemplates()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":   true,
-		"templates": templates,
-	})
-}

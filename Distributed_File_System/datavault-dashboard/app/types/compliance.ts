@@ -37,7 +37,7 @@ export interface AuditEvent {
   userId: string;
   action: 'create' | 'read' | 'update' | 'delete' | 'share' | 'download';
   resourceId: string;
-  resourceType: 'file' | 'folder' | 'user' | 'permission';
+  resourceType: 'file' | 'folder' | 'user' | 'permission' | 'system' | 'blockchain' | 'audit-chain';
   metadata: Record<string, any>;
   complianceFlags: string[];
   ipAddress: string;

@@ -400,33 +400,70 @@ static async handleFileView(fileId: string): Promise<void> {
         }
       } catch (error) {
         console.warn('Simple mode access failed, trying with session:', error);
+        // ✅ FIX: If simple mode fails and no session, continue to try with auth
       }
     } else {
       // Enterprise mode: Require authentication
-      if (!sessionId) {
-        throw new Error('Enterprise mode requires authentication - please log in');
-      }
+     // Replace confirmation dialogs with automatic redirects
+if (!sessionId) {
+  console.log('❌ Enterprise mode requires authentication - redirecting...');
+  // Show a brief notification instead of confirm dialog
+  if (typeof window !== 'undefined') {
+    // Optional: Show a toast notification
+    console.log('🔄 Redirecting to login...');
+  }
+  window.location.href = '/?redirect=' + encodeURIComponent(window.location.pathname);
+  return; // Don't throw error, just redirect
+}
+
       console.log('🔒 Opening file in ENTERPRISE mode with full security:', fileId);
     }
 
-    // Standard authenticated access
+    // ✅ ENHANCED: Try authenticated access for both modes
+    console.log(`🔐 Attempting authenticated file access for ${fileId}`);
     const response = await this.fetchWithFailover(`/api/files/view?id=${encodeURIComponent(fileId)}`);
     
     if (!response.ok) {
       if (response.status === 401) {
-        throw new Error('Authentication failed - please refresh and try again');
+        // ✅ FIX: Handle session expiration with redirect
+        console.log('❌ Session expired or authentication failed');
+        this.clearSession(); // Clear invalid session
+        
+        const shouldRedirect = confirm('Session expired. Redirect to login?');
+        if (shouldRedirect) {
+          window.location.href = '/?redirect=' + encodeURIComponent(window.location.pathname);
+        }
+        throw new Error('Authentication failed - session expired');
       }
+      
+      if (response.status === 403) {
+        throw new Error('Access denied - insufficient permissions');
+      }
+      
       throw new Error(`File access failed: ${response.status} ${response.statusText}`);
     }
 
     await this.processFileResponse(response, fileId);
+    console.log(`✅ Successfully opened file: ${fileId}`);
     
   } catch (error) {
     console.error('File view error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Failed to open file';
+    
+    // ✅ FIX: Handle authentication errors gracefully
+    if (errorMessage.includes('Authentication required') || 
+        errorMessage.includes('Enterprise mode requires') ||
+        errorMessage.includes('session expired')) {
+      // These errors already handled redirects above, don't re-throw
+      return;
+    }
+    
+    // Re-throw other errors for the UI to handle
     throw new Error(errorMessage);
   }
 }
+
+
 
 /**
  * ✅ NEW: Helper method to process file response

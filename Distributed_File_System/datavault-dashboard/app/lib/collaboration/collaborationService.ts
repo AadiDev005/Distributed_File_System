@@ -1,11 +1,36 @@
 'use client';
 
-// ✅ CRITICAL FIX: Import collaboration types (create this file if it doesn't exist)
-import type { 
-  CollaborationDocument, 
-  Collaborator, 
-  DocumentPermissions 
-} from '../../types/collaboration';
+// ✅ CRITICAL FIX: Import collaboration types
+export interface CollaborationDocument {
+  id: string;
+  title: string;
+  content: string;
+  type: 'text' | 'markdown' | 'code';
+  version: number;
+  lastModified: Date;
+  created: Date;
+  collaborators: Collaborator[];
+  permissions: DocumentPermissions;
+  encrypted: boolean;
+  owner: string;
+  securityMode: string;
+}
+
+export interface Collaborator {
+  id: string;
+  name: string;
+  email: string;
+  isOnline: boolean;
+  lastSeen: Date;
+  color: string;
+}
+
+export interface DocumentPermissions {
+  owner: string;
+  editors: string[];
+  commenters: string[];
+  viewers: string[];
+}
 
 // ✅ Export interfaces for external use
 export interface DocumentCreateData {
@@ -209,7 +234,8 @@ export class DataVaultAPI {
 
         if (response.success && response.data) {
           // Transform and normalize the response data
-          const documents = (response.data.documents || []).map((doc: any) => ({
+          const documents = (response.data?.documents || []).map((doc: any) => ({
+
             ...doc,
             lastModified: new Date(doc.lastModified || doc.updated_at || Date.now()),
             created: new Date(doc.created || doc.created_at || Date.now()),
@@ -465,7 +491,7 @@ export class DataVaultAPI {
     });
   }
 
-  // ✅ Additional collaboration methods (unchanged but with caching)
+  // ✅ Additional collaboration methods
   static async shareDocument(documentId: string, userIds: string[]): Promise<APIResponse<void>> {
     const cacheKey = `share-document-${documentId}-${userIds.join(',')}`;
     
@@ -568,7 +594,7 @@ export class DataVaultAPI {
     console.log('❌ All pending requests cancelled');
   }
 
-  // ✅ Private utility methods (unchanged)
+  // ✅ Private utility methods
   private static generateUserColor(userId: string): string {
     const colors = [
       '#3B82F6', '#10B981', '#F59E0B', '#EF4444', 
@@ -775,7 +801,7 @@ export default DataVaultAPI;
 
 // ✅ Export additional utilities
 export const apiUtils = {
-  generateUserColor: DataVaultAPI['generateUserColor'],
+  generateUserColor: (userId: string) => DataVaultAPI['generateUserColor'](userId),
   handleApiError: DataVaultAPI.handleApiError,
   getWebSocketUrl: DataVaultAPI.getWebSocketUrl,
   clearCache: DataVaultAPI.clearCache,
